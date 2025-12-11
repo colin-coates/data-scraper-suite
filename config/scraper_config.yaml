@@ -1,0 +1,109 @@
+# MJ Data Scraper Suite Configuration
+# This file contains all configuration options for the scraper suite
+
+# Engine Configuration
+max_concurrent_jobs: 5
+job_queue_size: 1000
+enable_metrics: true
+enable_anti_detection: true
+
+# Azure Integration (leave empty for local testing)
+azure_service_bus_connection: ""
+azure_blob_connection: ""
+azure_queue_name: "scraping-jobs"
+azure_blob_container: "scraping-results"
+
+# Default Settings
+default_rate_limit: 1.0
+
+# Scraper Configurations
+scrapers:
+  linkedin:
+    enabled: true
+    rate_limit: 10  # requests per minute
+    login_required: false
+    max_profiles_per_session: 50
+    extract_connections: false
+    extract_recommendations: true
+    extract_skills: true
+    extract_experience: true
+    extract_education: true
+
+  web:
+    enabled: true
+    rate_limit: 30
+    extract_metadata: true
+    extract_images: false
+    extract_links: true
+    follow_redirects: true
+    extract_structured_data: true
+    max_content_length: 1048576  # 1MB
+    allowed_domains: []  # Empty means all domains allowed
+
+  twitter:
+    enabled: false  # Disabled by default
+    rate_limit: 15
+    api_keys: []
+    extract_tweets: true
+    extract_profile: true
+    extract_followers: false
+
+  company_website:
+    enabled: false  # Disabled by default
+    rate_limit: 20
+    extract_contact_info: true
+    extract_team: true
+    extract_products: true
+    extract_news: true
+
+# Anti-Detection Configuration
+anti_detection:
+  enabled: true
+  dynamic_headers: true
+  human_behavior_simulation: true
+  cookie_persistence: true
+  proxy_rotation: true
+  behavior_patterns:
+    reading_time:
+      min: 2.0
+      max: 8.0
+    scroll_behavior:
+      patterns: ["smooth", "jumpy", "gradual"]
+      pause_probability: 0.3
+    typing_patterns:
+      keystroke_delay: [0.05, 0.15]
+      word_pause: [0.2, 0.8]
+
+# Proxy Configuration (for production use)
+proxies:
+  enabled: false
+  provider: "brightdata"  # Options: brightdata, smartproxy, oxylabs
+  residential_only: true
+  countries: ["US", "CA", "GB"]
+  rotation_interval: 300  # seconds
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/scraper.log"
+  max_file_size: 10485760  # 10MB
+  backup_count: 5
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  health_check_interval: 30
+  alert_thresholds:
+    error_rate: 0.1  # 10% error rate
+    response_time: 30.0  # 30 seconds
+    queue_size: 500
+
+# Plugin Configuration
+plugins:
+  auto_discover: true
+  plugin_dirs:
+    - "scrapers"
+    - "plugins"
+  enabled_plugins: []  # Empty means all discovered plugins
