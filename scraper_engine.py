@@ -25,6 +25,8 @@ from azure.storage.blob import BlobServiceClient
 
 from .core.base_scraper import BaseScraper, ScraperConfig, ScraperResult
 from .core.queue_publisher import QueuePublisher, QueueConfig, PublishResult
+from .core.mj_envelope import MJMessageEnvelope
+from .core.mj_payload_builder import build_person_payload, build_event_payload
 from .anti_detection.anti_detection import AntiDetectionLayer
 
 logger = logging.getLogger(__name__)
@@ -412,6 +414,26 @@ class ScraperEngine:
                 'processing_time': job.result.response_time,
                 'retry_count': job.result.retry_count
             }
+
+            # MJ ingestion integration - detect person/event and wrap in envelope
+            if job.result.success and job.result.data:
+                data_type = job.result.data.get("data_type")
+                if data_type in ["person", "event"]:
+                    # Build payload using mj_payload_builder
+                    if data_type == "person":
+                        payload = build_person_payload(job.result.data)
+                    elif data_type == "event":
+                        payload = build_event_payload(job.result.data)
+
+                    # Wrap using MJMessageEnvelope
+                    envelope = MJMessageEnvelope(
+                        data_type=data_type,
+                        payload=payload
+                    )
+
+                    # Publish via queue publisher
+                    if self.queue_publisher:
+                        await self.queue_publisher.publish_to_queue(envelope.to_dict())
 
             # Publish to Azure Service Bus
             if self.service_bus_client:

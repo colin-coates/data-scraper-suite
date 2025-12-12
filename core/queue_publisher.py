@@ -22,6 +22,9 @@ from azure.servicebus.aio import ServiceBusClient as AsyncServiceBusClient
 from azure.servicebus.aio import ServiceBusSender
 from azure.core.exceptions import ServiceBusError
 
+from .mj_envelope import MJMessageEnvelope
+from .mj_payload_builder import build_person_payload, build_event_payload
+
 logger = logging.getLogger(__name__)
 
 
@@ -127,10 +130,32 @@ class QueuePublisher:
             else:
                 raise ValueError(f"Data must be dict or list, got {type(data)}")
 
-            # Add metadata and prepare messages
+            # Wrap person/event payloads using MJMessageEnvelope
             messages = []
             for item in data_list:
-                message = self._prepare_message(item, metadata)
+                # Detect if result is "person" or "event"
+                data_type = item.get("data_type", "unknown")
+
+                if data_type == "person":
+                    payload = build_person_payload(item)
+                elif data_type == "event":
+                    payload = build_event_payload(item)
+                else:
+                    # Not MJ data, send as-is
+                    payload = item
+
+                # Create MJ envelope
+                envelope = MJMessageEnvelope(
+                    data_type=data_type,
+                    payload=payload,
+                    correlation_id=correlation_id
+                )
+
+                # Insert timestamp automatically
+                envelope.timestamp = datetime.utcnow().isoformat()
+
+                # Send .to_dict() output
+                message = self._prepare_message(envelope.to_dict(), metadata)
                 messages.append(message)
 
             # Publish messages
