@@ -424,6 +424,27 @@ class TimeAdvisor:
 
         return tips
 
+    def recommend_windows(self, operation_type: Optional[str] = None) -> List[Tuple[int, float]]:
+        """
+        Recommend optimal time windows for operations.
+
+        Uses the recommend_windows algorithm on telemetry data,
+        optionally filtered by operation type.
+
+        Args:
+            operation_type: Optional operation type filter
+
+        Returns:
+            List of (hour, efficiency_score) tuples for top 3 hours
+        """
+        # Get relevant telemetry data
+        if operation_type:
+            history = self.telemetry.get_telemetry_by_source(operation_type)
+        else:
+            history = list(self.telemetry.telemetry_data)
+
+        return recommend_windows(history)
+
     def export_time_analysis(self) -> Dict:
         """Export comprehensive time analysis data."""
         return {
@@ -445,6 +466,41 @@ _global_time_advisor = TimeAdvisor()
 def get_global_time_advisor() -> TimeAdvisor:
     """Get the global time advisor instance."""
     return _global_time_advisor
+
+
+def recommend_windows(history: List[ScrapeTelemetry]) -> List[Tuple[int, float]]:
+    """
+    Recommend optimal time windows based on historical performance.
+
+    Analyzes historical scraping telemetry to identify the most efficient
+    hours for operation execution based on yield per cost ratio.
+
+    Args:
+        history: List of historical ScrapeTelemetry records
+
+    Returns:
+        List of (hour, efficiency_score) tuples, sorted by efficiency (best first)
+        Returns top 3 most efficient hours
+    """
+    by_hour = {}
+    for h in history:
+        by_hour.setdefault(h.hour_of_day, []).append(h)
+
+    ranked = []
+    for hour, records in by_hour.items():
+        if not records:  # Skip empty hours
+            continue
+
+        avg_cost = sum(r.cost for r in records) / len(records)
+        avg_yield = sum(r.records_found for r in records) / len(records)
+
+        # Calculate efficiency as yield per unit cost
+        efficiency = avg_yield / max(avg_cost, 0.01)
+        ranked.append((hour, efficiency))
+
+    # Sort by efficiency (highest first) and return top 3
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return ranked[:3]
 
 
 async def get_optimal_schedule(
