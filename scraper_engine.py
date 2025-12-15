@@ -27,6 +27,7 @@ from .core.base_scraper import BaseScraper, ScraperConfig, ScraperResult
 from .core.queue_publisher import QueuePublisher, QueueConfig, PublishResult
 from .core.mj_envelope import MJMessageEnvelope
 from .core.mj_payload_builder import build_person_payload, build_event_payload
+from .core.scraper_engine import CoreScraperEngine, EngineConfig
 from .anti_detection.anti_detection import AntiDetectionLayer
 
 logger = logging.getLogger(__name__)
@@ -64,119 +65,67 @@ class EngineConfig:
 
 
 class ScraperEngine:
-    """Centralized orchestration engine for web scraping operations."""
+    """
+    Legacy compatibility layer for the MJ Data Scraper Suite.
+
+    This class provides backward compatibility while delegating to the
+    enhanced CoreScraperEngine with governance and control contract support.
+    """
 
     def __init__(self, config: Optional[EngineConfig] = None):
         self.config = config or EngineConfig()
         self.logger = logging.getLogger(f"{__name__}.ScraperEngine")
 
-        # Component registries
-        self.scrapers: Dict[str, Type[BaseScraper]] = {}
-        self.active_scrapers: Dict[str, BaseScraper] = {}
+        # Initialize core engine
+        self.core_engine = CoreScraperEngine(self.config)
 
-        # Job management
-        self.job_queue: asyncio.Queue[Job] = asyncio.Queue(maxsize=self.config.job_queue_size)
-        self.active_jobs: Dict[str, Job] = {}
-        self.completed_jobs: List[Job] = []
+        # Legacy compatibility attributes
+        self.scrapers = self.core_engine.scrapers
+        self.active_scrapers = self.core_engine.active_scrapers
+        self.active_jobs = self.core_engine.active_jobs
+        self.completed_jobs = self.core_engine.completed_jobs
 
-        # Azure clients
-        self.service_bus_client: Optional[AsyncServiceBusClient] = None
-        self.blob_service_client: Optional[BlobServiceClient] = None
-
-        # Queue publisher for results
-        self.queue_publisher: Optional[QueuePublisher] = None
-
-        # Anti-detection layer
-        self.anti_detection = AntiDetectionLayer() if self.config.enable_anti_detection else None
-
-        # Control flags
-        self.running = False
-        self.shutdown_event = asyncio.Event()
-
-        # Metrics
-        self.metrics = {
-            'jobs_processed': 0,
-            'jobs_succeeded': 0,
-            'jobs_failed': 0,
-            'total_processing_time': 0.0,
-            'scraper_usage': {},
-            'start_time': datetime.utcnow()
-        }
-
-        # Thread pool for blocking operations
-        self.executor = ThreadPoolExecutor(max_workers=self.config.max_concurrent_jobs)
-
-        self.logger.info("ScraperEngine initialized")
+        self.logger.info("ScraperEngine initialized (with CoreScraperEngine backend)")
 
     async def initialize(self) -> None:
-        """Initialize the scraper engine and its components."""
-        try:
-            # Initialize Azure clients
-            if self.config.azure_service_bus_connection:
-                self.service_bus_client = AsyncServiceBusClient.from_connection_string(
-                    self.config.azure_service_bus_connection
-                )
-                self.logger.info("Azure Service Bus client initialized")
-
-            if self.config.azure_blob_connection:
-                self.blob_service_client = BlobServiceClient.from_connection_string(
-                    self.config.azure_blob_connection
-                )
-                self.logger.info("Azure Blob Storage client initialized")
-
-            # Initialize queue publisher if enabled
-            if self.config.enable_result_publishing and self.config.azure_service_bus_connection:
-                queue_config = QueueConfig(
-                    connection_string=self.config.azure_service_bus_connection,
-                    queue_name=self.config.output_queue_name
-                )
-                self.queue_publisher = QueuePublisher(queue_config)
-                await self.queue_publisher.initialize()
-                self.logger.info("Queue publisher initialized")
-
-            # Initialize anti-detection
-            if self.anti_detection:
-                await self.anti_detection.initialize()
-                self.logger.info("Anti-detection layer initialized")
-
-            self.logger.info("ScraperEngine initialization complete")
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize ScraperEngine: {e}")
-            raise
+        """Initialize the scraper engine with system controls."""
+        await self.core_engine.initialize()
 
     def register_scraper(self, scraper_type: str, scraper_class: Type[BaseScraper],
                         config: Optional[ScraperConfig] = None) -> None:
         """
-        Register a scraper class with the engine.
+        Register a scraper class with the engine (legacy compatibility).
 
         Args:
             scraper_type: Unique identifier for the scraper type
             scraper_class: The scraper class to register
             config: Optional default configuration for the scraper
         """
-        if scraper_type in self.scrapers:
-            self.logger.warning(f"Scraper type '{scraper_type}' already registered, overwriting")
+        # Convert legacy registration to new control model system
+        from .core.control_models import ScraperType as ControlScraperType, ScraperControl
 
-        self.scrapers[scraper_type] = scraper_class
+        try:
+            control_scraper_type = ControlScraperType(scraper_type)
+        except ValueError:
+            self.logger.warning(f"Unknown scraper type '{scraper_type}', registering as generic")
+            # For backward compatibility, allow any string
+            control_scraper_type = ControlScraperType.WEB  # Default fallback
 
-        # Create default config if not provided
-        if config is None:
-            config = ScraperConfig(
-                name=scraper_type,
-                rate_limit_delay=self.config.default_rate_limit
-            )
+        # Create scraper control from legacy config
+        scraper_control = ScraperControl(
+            scraper_id="",
+            scraper_type=control_scraper_type,
+            name=scraper_type
+        )
 
-        # Instantiate the scraper
-        scraper_instance = scraper_class(config)
+        # Apply legacy config if provided
+        if config:
+            scraper_control.rate_limit = config.rate_limit_delay
+            scraper_control.max_retries = config.max_retries
+            scraper_control.timeout = config.timeout
 
-        # Attach anti-detection if available
-        if self.anti_detection:
-            scraper_instance.set_anti_detection(self.anti_detection)
-
-        self.active_scrapers[scraper_type] = scraper_instance
-
-        self.logger.info(f"Registered scraper: {scraper_type}")
+        # Register with core engine
+        self.core_engine.register_scraper(control_scraper_type, scraper_class, scraper_control)
 
     def unregister_scraper(self, scraper_type: str) -> None:
         """Unregister a scraper type."""
@@ -192,7 +141,7 @@ class ScraperEngine:
 
     async def dispatch_job(self, job_data: Dict[str, Any]) -> str:
         """
-        Dispatch a scraping job to the engine.
+        Dispatch a scraping job to the engine (legacy compatibility).
 
         Args:
             job_data: Job specification including scraper_type, target, etc.
@@ -200,72 +149,42 @@ class ScraperEngine:
         Returns:
             Job ID for tracking
         """
-        job = Job(
-            job_id=f"job_{int(time.time() * 1000)}_{hash(str(job_data)) % 10000}",
-            scraper_type=job_data.get('scraper_type', ''),
+        from .core.control_models import JobControl, ScraperType as ControlScraperType, JobPriority
+
+        # Convert legacy job data to JobControl
+        scraper_type_str = job_data.get('scraper_type', '')
+        try:
+            scraper_type = ControlScraperType(scraper_type_str)
+        except ValueError:
+            raise ValueError(f"Unknown scraper type: {scraper_type_str}")
+
+        # Convert priority string to enum
+        priority_str = job_data.get('priority', 'normal')
+        try:
+            priority = JobPriority(priority_str)
+        except ValueError:
+            priority = JobPriority.NORMAL
+
+        # Create JobControl with optional contract
+        job_control = JobControl(
+            job_id="",  # Will be generated
+            scraper_type=scraper_type,
             target=job_data.get('target', {}),
-            priority=job_data.get('priority', 'normal'),
-            metadata=job_data.get('metadata', {})
+            priority=priority,
+            metadata=job_data.get('metadata', {}),
+            control_contract=job_data.get('control_contract')  # Optional governance
         )
 
-        # Validate job
-        if not job.scraper_type or job.scraper_type not in self.active_scrapers:
-            raise ValueError(f"Unknown or unregistered scraper type: {job.scraper_type}")
-
-        # Add to queue
-        try:
-            self.job_queue.put_nowait(job)
-            self.active_jobs[job.job_id] = job
-            self.logger.info(f"Job dispatched: {job.job_id} ({job.scraper_type})")
-            return job.job_id
-
-        except asyncio.QueueFull:
-            raise RuntimeError("Job queue is full")
+        # Submit to core engine
+        return await self.core_engine.submit_job(job_control)
 
     async def start(self) -> None:
         """Start the scraper engine processing loop."""
-        if self.running:
-            self.logger.warning("Engine already running")
-            return
-
-        self.running = True
-        self.shutdown_event.clear()
-
-        self.logger.info("Starting ScraperEngine with "
-                        f"{self.config.max_concurrent_jobs} concurrent jobs")
-
-        try:
-            # Start job processors
-            processors = [
-                asyncio.create_task(self._job_processor())
-                for _ in range(self.config.max_concurrent_jobs)
-            ]
-
-            # Start queue monitor
-            monitor = asyncio.create_task(self._queue_monitor())
-
-            # Wait for shutdown
-            await self.shutdown_event.wait()
-
-            # Cancel processors
-            for processor in processors:
-                processor.cancel()
-            for monitor_task in [monitor]:
-                monitor_task.cancel()
-
-            # Wait for cleanup
-            await asyncio.gather(*processors, *monitor_task, return_exceptions=True)
-
-        except Exception as e:
-            self.logger.error(f"Engine error: {e}")
-        finally:
-            self.running = False
-            self.logger.info("ScraperEngine stopped")
+        await self.core_engine.start_processing()
 
     async def stop(self) -> None:
         """Stop the scraper engine gracefully."""
-        self.logger.info("Stopping ScraperEngine...")
-        self.shutdown_event.set()
+        await self.core_engine.stop_processing()
 
     async def _job_processor(self) -> None:
         """Process jobs from the queue."""
@@ -517,26 +436,8 @@ class ScraperEngine:
         return None
 
     def get_metrics(self) -> Dict[str, Any]:
-        """Get engine performance metrics."""
-        uptime = (datetime.utcnow() - self.metrics['start_time']).total_seconds()
-
-        return {
-            'uptime_seconds': uptime,
-            'jobs_processed': self.metrics['jobs_processed'],
-            'jobs_succeeded': self.metrics['jobs_succeeded'],
-            'jobs_failed': self.metrics['jobs_failed'],
-            'success_rate': self.metrics['jobs_succeeded'] / max(1, self.metrics['jobs_processed']),
-            'average_processing_time': self.metrics['total_processing_time'] / max(1, self.metrics['jobs_processed']),
-            'active_jobs': len(self.active_jobs),
-            'queued_jobs': self.job_queue.qsize(),
-            'completed_jobs': len(self.completed_jobs),
-            'scraper_usage': self.metrics['scraper_usage'],
-            'registered_scrapers': list(self.scrapers.keys()),
-            'active_scrapers': list(self.active_scrapers.keys()),
-            'anti_detection_enabled': self.anti_detection is not None,
-            'result_publishing_enabled': self.config.enable_result_publishing,
-            'queue_publisher_metrics': self.queue_publisher.get_metrics() if self.queue_publisher else None
-        }
+        """Get engine performance metrics (legacy compatibility)."""
+        return self.core_engine.get_engine_metrics()
 
     def get_registered_scrapers(self) -> List[str]:
         """Get list of registered scraper types."""
@@ -551,33 +452,7 @@ class ScraperEngine:
 
     async def cleanup(self) -> None:
         """Cleanup engine resources."""
-        self.logger.info("Cleaning up ScraperEngine...")
-
-        # Cleanup scrapers
-        for scraper in self.active_scrapers.values():
-            try:
-                await scraper.cleanup()
-            except Exception as e:
-                self.logger.error(f"Error cleaning up scraper {scraper.config.name}: {e}")
-
-        # Cleanup anti-detection
-        if self.anti_detection:
-            await self.anti_detection.cleanup()
-
-        # Close clients
-        if self.service_bus_client:
-            await self.service_bus_client.close()
-
-        # Cleanup queue publisher
-        if self.queue_publisher:
-            await self.queue_publisher.cleanup()
-
-        # Shutdown executor
-        self.executor.shutdown(wait=True)
-
-        self.logger.info("ScraperEngine cleanup complete")
+        await self.core_engine.cleanup()
 
     def __str__(self) -> str:
-        return f"ScraperEngine(jobs_processed={self.metrics['jobs_processed']}, " \
-               f"active_jobs={len(self.active_jobs)}, " \
-               f"registered_scrapers={len(self.scrapers)})"
+        return str(self.core_engine)
