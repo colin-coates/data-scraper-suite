@@ -18,6 +18,21 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 
 ---
 
+## 🎭 Scraper Roles & Data Pipeline
+
+### Role Definitions
+- **Discovery**: Find and identify new data sources, profiles, and entities
+- **Verification**: Validate and confirm the accuracy of existing data
+- **Enrichment**: Add additional context, details, and related information to existing data
+- **Browser (Tier 3)**: Specialized browser-based scrapers requiring advanced anti-detection (highest complexity)
+
+### Data Pipeline Flow
+```
+Discovery → Verification → Enrichment → Browser (Tier 3)
+    ↓           ↓           ↓           ↓
+Find Data → Validate → Enhance → Complex Sources
+```
+
 ## 🕷️ Web Scrapers
 
 ### LinkedIn Scraper
@@ -26,6 +41,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract professional profile data, work history, skills, and network connections
 - **Uses Browser?** yes
 - **Source Type:** social
+- **Role:** Enrichment
 
 ### Twitter/X Scraper
 - **Name:** Twitter/X Scraper
@@ -33,6 +49,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract user profiles, tweets, follower data, and engagement metrics
 - **Uses Browser?** no (API + web fallback)
 - **Source Type:** social
+- **Role:** Enrichment
 
 ### Facebook Scraper
 - **Name:** Facebook Scraper
@@ -40,6 +57,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract user profiles, posts, groups, and social connections
 - **Uses Browser?** yes
 - **Source Type:** social
+- **Role:** Browser (Tier 3)
 
 ### Instagram Scraper
 - **Name:** Instagram Scraper
@@ -47,6 +65,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract profiles, posts, stories, and hashtag analytics
 - **Uses Browser?** yes
 - **Source Type:** social
+- **Role:** Browser (Tier 3)
 
 ### Company Website Scraper
 - **Name:** Company Website Scraper
@@ -54,6 +73,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract corporate information, team data, products, and contact details
 - **Uses Browser?** no
 - **Source Type:** other
+- **Role:** Enrichment
 
 ### Generic Web Scraper
 - **Name:** Generic Web Scraper
@@ -61,6 +81,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract web page content, metadata, links, and structured data
 - **Uses Browser?** no
 - **Source Type:** other
+- **Role:** Discovery
 
 ### News Scraper
 - **Name:** News Scraper
@@ -68,6 +89,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract news articles, publication metadata, and content analysis
 - **Uses Browser?** no
 - **Source Type:** newspaper
+- **Role:** Enrichment
 
 ### Business Directory Scraper
 - **Name:** Business Directory Scraper
@@ -75,6 +97,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract business listings, contact info, and directory data
 - **Uses Browser?** no
 - **Source Type:** other
+- **Role:** Discovery
 
 ### Public Records Scraper
 - **Name:** Public Records Scraper
@@ -82,6 +105,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract government records, property data, and public databases
 - **Uses Browser?** no
 - **Source Type:** public records
+- **Role:** Verification
 
 ### Social Media Scraper
 - **Name:** Social Media Scraper
@@ -89,6 +113,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Extract multi-platform social media data and network analysis
 - **Uses Browser?** yes
 - **Source Type:** social
+- **Role:** Browser (Tier 3)
 
 ## 🔌 API Collectors
 
@@ -98,6 +123,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Official LinkedIn API access for organizations, people, and jobs
 - **Uses Browser?** no
 - **Source Type:** api
+- **Role:** Enrichment
 
 ### Hunter.io API Collector
 - **Name:** Hunter.io API Collector
@@ -105,6 +131,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Email address discovery, verification, and domain analysis
 - **Uses Browser?** no
 - **Source Type:** api
+- **Role:** Discovery
 
 ### Clearbit API Collector
 - **Name:** Clearbit API Collector
@@ -112,6 +139,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Company and person data enrichment with social profiles
 - **Uses Browser?** no
 - **Source Type:** api
+- **Role:** Enrichment
 
 ### FullContact API Collector
 - **Name:** FullContact API Collector
@@ -119,6 +147,7 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 - **Purpose:** Contact information enrichment and social data aggregation
 - **Uses Browser?** no
 - **Source Type:** api
+- **Role:** Verification
 
 ### 🔗 LinkedIn Scraper (`scrapers/linkedin_scraper.py`)
 
@@ -501,6 +530,14 @@ job_data = {
 ### Active Scrapers (2/10)
 - ✅ **LinkedIn Scraper** - Primary professional data source
 - ✅ **Web Scraper** - Generic web content extraction
+
+### Role Distribution
+| Role | Count | Active | Description |
+|------|-------|--------|-------------|
+| **Discovery** | 2 | 1 | Web Scraper, Business Directory |
+| **Verification** | 2 | 0 | Public Records, FullContact API |
+| **Enrichment** | 6 | 1 | LinkedIn, Twitter, Company, News, LinkedIn API, Clearbit API |
+| **Browser (Tier 3)** | 4 | 0 | Facebook, Instagram, Social Media, Hunter.io API |
 
 ### Disabled Scrapers (8/10)
 - ❌ **Twitter/X Scraper** - API/web hybrid (high risk)
