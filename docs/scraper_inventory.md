@@ -20,6 +20,106 @@ Target Source → Scraper/API → Base Framework → Cost Governor → Telemetry
 
 ## 🕷️ Web Scrapers
 
+### LinkedIn Scraper
+- **Name:** LinkedIn Scraper
+- **File:** `scrapers/linkedin_scraper.py`
+- **Purpose:** Extract professional profile data, work history, skills, and network connections
+- **Uses Browser?** yes
+- **Source Type:** social
+
+### Twitter/X Scraper
+- **Name:** Twitter/X Scraper
+- **File:** `scrapers/twitter_scraper.py`
+- **Purpose:** Extract user profiles, tweets, follower data, and engagement metrics
+- **Uses Browser?** no (API + web fallback)
+- **Source Type:** social
+
+### Facebook Scraper
+- **Name:** Facebook Scraper
+- **File:** `scrapers/facebook_scraper.py`
+- **Purpose:** Extract user profiles, posts, groups, and social connections
+- **Uses Browser?** yes
+- **Source Type:** social
+
+### Instagram Scraper
+- **Name:** Instagram Scraper
+- **File:** `scrapers/instagram_scraper.py`
+- **Purpose:** Extract profiles, posts, stories, and hashtag analytics
+- **Uses Browser?** yes
+- **Source Type:** social
+
+### Company Website Scraper
+- **Name:** Company Website Scraper
+- **File:** `scrapers/company_website_scraper.py`
+- **Purpose:** Extract corporate information, team data, products, and contact details
+- **Uses Browser?** no
+- **Source Type:** other
+
+### Generic Web Scraper
+- **Name:** Generic Web Scraper
+- **File:** `scrapers/web_scraper.py`
+- **Purpose:** Extract web page content, metadata, links, and structured data
+- **Uses Browser?** no
+- **Source Type:** other
+
+### News Scraper
+- **Name:** News Scraper
+- **File:** `scrapers/news_scraper.py`
+- **Purpose:** Extract news articles, publication metadata, and content analysis
+- **Uses Browser?** no
+- **Source Type:** newspaper
+
+### Business Directory Scraper
+- **Name:** Business Directory Scraper
+- **File:** `scrapers/business_directory_scraper.py`
+- **Purpose:** Extract business listings, contact info, and directory data
+- **Uses Browser?** no
+- **Source Type:** other
+
+### Public Records Scraper
+- **Name:** Public Records Scraper
+- **File:** `scrapers/public_records_scraper.py`
+- **Purpose:** Extract government records, property data, and public databases
+- **Uses Browser?** no
+- **Source Type:** public records
+
+### Social Media Scraper
+- **Name:** Social Media Scraper
+- **File:** `scrapers/social_media_scraper.py`
+- **Purpose:** Extract multi-platform social media data and network analysis
+- **Uses Browser?** yes
+- **Source Type:** social
+
+## 🔌 API Collectors
+
+### LinkedIn API Collector
+- **Name:** LinkedIn API Collector
+- **File:** `apis/linkedin_api.py`
+- **Purpose:** Official LinkedIn API access for organizations, people, and jobs
+- **Uses Browser?** no
+- **Source Type:** api
+
+### Hunter.io API Collector
+- **Name:** Hunter.io API Collector
+- **File:** `apis/hunter_io.py`
+- **Purpose:** Email address discovery, verification, and domain analysis
+- **Uses Browser?** no
+- **Source Type:** api
+
+### Clearbit API Collector
+- **Name:** Clearbit API Collector
+- **File:** `apis/clearbit.py`
+- **Purpose:** Company and person data enrichment with social profiles
+- **Uses Browser?** no
+- **Source Type:** api
+
+### FullContact API Collector
+- **Name:** FullContact API Collector
+- **File:** `apis/fullcontact.py`
+- **Purpose:** Contact information enrichment and social data aggregation
+- **Uses Browser?** no
+- **Source Type:** api
+
 ### 🔗 LinkedIn Scraper (`scrapers/linkedin_scraper.py`)
 
 **Status:** ✅ **ACTIVE** | **Priority:** HIGH
