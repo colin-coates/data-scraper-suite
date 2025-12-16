@@ -94,7 +94,7 @@ class BaseScraper(ABC):
 
     async def scrape(self, target: Dict[str, Any]) -> ScraperResult:
         """
-        Main scraping method with error handling and retries.
+        Main scraping method with error handling, retries, and runtime governance.
 
         Args:
             target: Target information (URL, ID, search terms, etc.)
@@ -110,31 +110,39 @@ class BaseScraper(ABC):
         )
 
         try:
+            # Pre-flight governance check
+            if self.control:
+                self.enforce()
+
             # Check rate limiting
             await self._check_rate_limit()
 
             # Pre-scrape hooks
             await self._pre_scrape_hook(target)
 
-            # Execute scrape with retries
+            # Execute scrape with retries and runtime monitoring
             result = await self._scrape_with_retries(target, result)
 
             # Post-scrape hooks
             await self._post_scrape_hook(result)
 
-            # Update metrics
+            # Update final metrics
             result.response_time = time.time() - start_time
 
             if result.success:
                 self._success_count += 1
-                # Update governance metrics
-                self.pages += 1
-                if result.data:
-                    self.records += len(result.data) if isinstance(result.data, (list, dict)) else 1
+                # Governance metrics are now updated in _execute_scrape_with_monitoring
                 if self.on_success:
                     self.on_success(result)
             else:
                 self._error_count += 1
+
+        except AbortScrape as e:
+            # Handle governance violations during execution
+            result.error_message = f"Governance violation: {e}"
+            result.response_time = time.time() - start_time
+            self._error_count += 1
+            self.logger.error(f"Governance violation during scraping: {e}")
 
         except Exception as e:
             result.error_message = str(e)
@@ -154,7 +162,7 @@ class BaseScraper(ABC):
             # Fallback to single attempt if retry is disabled
             try:
                 result.retry_count = 0
-                scrape_result = await self._execute_scrape(target)
+                scrape_result = await self._execute_scrape_with_monitoring(target)
 
                 if await self._validate_result(scrape_result):
                     result.success = True
@@ -181,8 +189,8 @@ class BaseScraper(ABC):
         # Create retry-enabled scrape function
         @retry_async(retry_config)
         async def scrape_with_retry():
-            # Execute the actual scraping logic
-            scrape_result = await self._execute_scrape(target)
+            # Execute the actual scraping logic with monitoring
+            scrape_result = await self._execute_scrape_with_monitoring(target)
 
             # Validate result
             if await self._validate_result(scrape_result):
@@ -204,6 +212,38 @@ class BaseScraper(ABC):
             # Call retry callback if available
             if self.on_retry:
                 self.on_retry(result.retry_count, e)
+
+        return result
+
+    async def _execute_scrape_with_monitoring(self, target: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute scraping with runtime governance monitoring.
+
+        This wrapper provides continuous compliance checking during execution.
+        """
+        # Runtime governance checks (before execution)
+        if self.control:
+            # Check runtime against budget continuously
+            time_elapsed = time.time() - self.start_time
+            if hasattr(self.control.budget, 'max_runtime_minutes') and time_elapsed > (self.control.budget.max_runtime_minutes * 60):
+                self.logger.warning(f"Runtime budget exceeded: {time_elapsed:.1f}s > {self.control.budget.max_runtime_minutes * 60}s")
+                raise AbortScrape(f"Runtime budget exceeded: {time_elapsed:.1f}s used")
+
+            # Periodic governance re-validation (every 10 pages or configurable interval)
+            if self.pages > 0 and self.pages % 10 == 0:
+                try:
+                    self.enforce()
+                    self.logger.debug(f"Governance check passed at page {self.pages}")
+                except AbortScrape as e:
+                    self.logger.error(f"Governance violation during execution: {e}")
+                    raise
+
+        # Execute the actual scraping logic
+        result = await self._execute_scrape(target)
+
+        # Update page counter after successful execution
+        if self.control:
+            self.pages += 1
 
         return result
 
