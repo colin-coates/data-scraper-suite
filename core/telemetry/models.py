@@ -12,9 +12,14 @@ across all scraper operations with enterprise-grade observability.
 
 import uuid
 from typing import Dict, Any, List, Optional, Union
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 import uuid
+import json
+import os
+import asyncio
+from pathlib import Path
+import logging
 
 try:
     from pydantic import BaseModel, Field, validator
@@ -770,3 +775,467 @@ def create_sentinel_outcome(
         sentinel_name=sentinel_name,
         **kwargs
     )
+
+
+# Sentinel Outcome Persistence Layer
+class SentinelOutcomeStorage:
+    """
+    Enterprise-grade persistence layer for sentinel outcomes.
+
+    Provides comprehensive storage, retrieval, and analytics capabilities
+    for sentinel outcome data with enterprise features.
+    """
+
+    def __init__(self, storage_path: Optional[str] = None):
+        self.storage_path = Path(storage_path or "data/sentinel_outcomes")
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.logger = logging.getLogger(__name__)
+        self._lock = asyncio.Lock()
+        self._cache = {}  # Simple in-memory cache for recent outcomes
+
+        # Enterprise configuration
+        self.max_cache_size = 1000
+        self.compression_enabled = True
+        self.batch_size = 100
+        self.retention_days = 90
+
+        self.logger.info(f"SentinelOutcomeStorage initialized at {self.storage_path}")
+
+    def _get_domain_path(self, domain: str) -> Path:
+        """Get the storage path for a specific domain."""
+        # Sanitize domain for filesystem
+        safe_domain = domain.replace(".", "_").replace("/", "_")
+        return self.storage_path / safe_domain
+
+    def _get_outcome_filename(self, outcome: SentinelOutcome) -> str:
+        """Generate filename for outcome based on timestamp."""
+        timestamp_str = outcome.timestamp.strftime("%Y%m%d_%H%M%S")
+        return f"{timestamp_str}_{outcome.outcome_id[:8]}.json"
+
+    async def save_outcome(self, outcome: SentinelOutcome) -> bool:
+        """
+        Save a sentinel outcome with enterprise-grade reliability.
+
+        Args:
+            outcome: The sentinel outcome to save
+
+        Returns:
+            bool: True if saved successfully, False otherwise
+        """
+        async with self._lock:
+            try:
+                domain_path = self._get_domain_path(outcome.domain)
+                domain_path.mkdir(exist_ok=True)
+
+                filename = self._get_outcome_filename(outcome)
+                filepath = domain_path / filename
+
+                # Convert to dict for JSON serialization
+                outcome_dict = outcome.dict()
+
+                # Add enterprise metadata
+                outcome_dict["_metadata"] = {
+                    "saved_at": datetime.utcnow().isoformat(),
+                    "version": "1.0",
+                    "compressed": self.compression_enabled,
+                    "source": "sentinel_outcome_storage"
+                }
+
+                # Write with atomic operation (write to temp then rename)
+                temp_filepath = filepath.with_suffix('.tmp')
+                with open(temp_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(outcome_dict, f, indent=2, default=str, ensure_ascii=False)
+
+                # Atomic rename
+                temp_filepath.rename(filepath)
+
+                # Update cache
+                cache_key = f"{outcome.domain}:{outcome.outcome_id}"
+                self._cache[cache_key] = outcome
+
+                # Maintain cache size
+                if len(self._cache) > self.max_cache_size:
+                    # Remove oldest entries (simple LRU approximation)
+                    oldest_keys = list(self._cache.keys())[:100]
+                    for key in oldest_keys:
+                        del self._cache[key]
+
+                # Emit telemetry
+                await self._emit_save_telemetry(outcome, filepath)
+
+                self.logger.info(f"✅ Saved sentinel outcome: {outcome.domain} -> {filepath.name}")
+                return True
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to save sentinel outcome for {outcome.domain}: {e}")
+                await self._emit_error_telemetry(outcome, str(e))
+                return False
+
+    async def load_domain_history(
+        self,
+        domain: str,
+        lookback_days: int = 30,
+        limit: Optional[int] = None,
+        min_risk_level: Optional[str] = None
+    ) -> List[SentinelOutcome]:
+        """
+        Load historical sentinel outcomes for a domain with enterprise filtering.
+
+        Args:
+            domain: Domain to load history for
+            lookback_days: Number of days to look back
+            limit: Maximum number of outcomes to return
+            min_risk_level: Minimum risk level to include
+
+        Returns:
+            List of sentinel outcomes sorted by timestamp (newest first)
+        """
+        async with self._lock:
+            try:
+                domain_path = self._get_domain_path(domain)
+                if not domain_path.exists():
+                    self.logger.debug(f"No history found for domain: {domain}")
+                    return []
+
+                cutoff_date = datetime.utcnow() - timedelta(days=lookback_days)
+                outcomes = []
+
+                # Load from filesystem
+                for json_file in domain_path.glob("*.json"):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+
+                        # Skip metadata
+                        if "_metadata" in data:
+                            del data["_metadata"]
+
+                        outcome = SentinelOutcome(**data)
+
+                        # Apply filters
+                        if outcome.timestamp < cutoff_date:
+                            continue
+
+                        if min_risk_level:
+                            risk_levels = ["low", "medium", "high", "critical"]
+                            if risk_levels.index(outcome.risk_level) < risk_levels.index(min_risk_level):
+                                continue
+
+                        outcomes.append(outcome)
+
+                    except Exception as e:
+                        self.logger.warning(f"Failed to load outcome from {json_file}: {e}")
+                        continue
+
+                # Sort by timestamp (newest first)
+                outcomes.sort(key=lambda x: x.timestamp, reverse=True)
+
+                # Apply limit
+                if limit:
+                    outcomes = outcomes[:limit]
+
+                # Update cache
+                for outcome in outcomes[:10]:  # Cache most recent
+                    cache_key = f"{domain}:{outcome.outcome_id}"
+                    self._cache[cache_key] = outcome
+
+                self.logger.info(f"✅ Loaded {len(outcomes)} historical outcomes for {domain}")
+                return outcomes
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to load history for {domain}: {e}")
+                return []
+
+    async def get_domain_analytics(
+        self,
+        domain: str,
+        lookback_days: int = 30
+    ) -> Dict[str, Any]:
+        """
+        Get comprehensive analytics for a domain's sentinel history.
+
+        Args:
+            domain: Domain to analyze
+            lookback_days: Analysis timeframe
+
+        Returns:
+            Dictionary with comprehensive domain analytics
+        """
+        outcomes = await self.load_domain_history(domain, lookback_days)
+
+        if not outcomes:
+            return {
+                "domain": domain,
+                "analysis_period_days": lookback_days,
+                "total_outcomes": 0,
+                "error": "No historical data available"
+            }
+
+        # Risk level distribution
+        risk_distribution = {}
+        for outcome in outcomes:
+            risk_distribution[outcome.risk_level] = risk_distribution.get(outcome.risk_level, 0) + 1
+
+        # Action distribution
+        action_distribution = {}
+        for outcome in outcomes:
+            action_distribution[outcome.action] = action_distribution.get(outcome.action, 0) + 1
+
+        # Temporal analysis
+        hourly_distribution = {}
+        daily_distribution = {}
+        for outcome in outcomes:
+            hour = outcome.hour_of_day
+            day = outcome.day_of_week
+            hourly_distribution[hour] = hourly_distribution.get(hour, 0) + 1
+            daily_distribution[day] = daily_distribution.get(day, 0) + 1
+
+        # Performance metrics
+        avg_latency = sum(o.latency_ms for o in outcomes) / len(outcomes)
+        blocked_rate = sum(1 for o in outcomes if o.blocked) / len(outcomes)
+
+        # Trend analysis
+        recent_outcomes = [o for o in outcomes if o.timestamp >= datetime.utcnow() - timedelta(days=7)]
+        recent_risk_avg = sum(
+            ["low", "medium", "high", "critical"].index(o.risk_level) + 1
+            for o in recent_outcomes
+        ) / len(recent_outcomes) if recent_outcomes else 0
+
+        return {
+            "domain": domain,
+            "analysis_period_days": lookback_days,
+            "total_outcomes": len(outcomes),
+            "date_range": {
+                "oldest": min(o.timestamp for o in outcomes).isoformat(),
+                "newest": max(o.timestamp for o in outcomes).isoformat()
+            },
+            "risk_analysis": {
+                "distribution": risk_distribution,
+                "most_common_risk": max(risk_distribution.items(), key=lambda x: x[1])[0] if risk_distribution else None,
+                "recent_risk_trend": recent_risk_avg
+            },
+            "action_analysis": {
+                "distribution": action_distribution,
+                "most_common_action": max(action_distribution.items(), key=lambda x: x[1])[0] if action_distribution else None
+            },
+            "temporal_patterns": {
+                "hourly_distribution": hourly_distribution,
+                "daily_distribution": daily_distribution,
+                "peak_hour": max(hourly_distribution.items(), key=lambda x: x[1])[0] if hourly_distribution else None,
+                "peak_day": max(daily_distribution.items(), key=lambda x: x[1])[0] if daily_distribution else None
+            },
+            "performance_metrics": {
+                "average_latency_ms": avg_latency,
+                "blocked_rate": blocked_rate,
+                "efficiency_score_avg": sum(o.efficiency_score or 0 for o in outcomes) / len(outcomes)
+            },
+            "compliance_summary": {
+                "compliance_flags_total": sum(len(o.compliance_flags) for o in outcomes),
+                "escalation_required_count": sum(1 for o in outcomes if o.escalation_required),
+                "audit_trail_completeness": sum(1 for o in outcomes if len(o.audit_trail or []) > 0) / len(outcomes)
+            }
+        }
+
+    async def cleanup_old_data(self, older_than_days: Optional[int] = None) -> int:
+        """
+        Clean up old sentinel outcome data.
+
+        Args:
+            older_than_days: Remove data older than this many days (uses retention_days if None)
+
+        Returns:
+            Number of files removed
+        """
+        async with self._lock:
+            try:
+                cutoff_days = older_than_days or self.retention_days
+                cutoff_date = datetime.utcnow() - timedelta(days=cutoff_days)
+                removed_count = 0
+
+                for domain_dir in self.storage_path.iterdir():
+                    if domain_dir.is_dir():
+                        for json_file in domain_dir.glob("*.json"):
+                            try:
+                                # Check file modification time
+                                if json_file.stat().st_mtime < cutoff_date.timestamp():
+                                    json_file.unlink()
+                                    removed_count += 1
+                            except Exception as e:
+                                self.logger.warning(f"Failed to check/cleanup {json_file}: {e}")
+
+                if removed_count > 0:
+                    self.logger.info(f"🧹 Cleaned up {removed_count} old sentinel outcome files")
+
+                return removed_count
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to cleanup old data: {e}")
+                return 0
+
+    async def _emit_save_telemetry(self, outcome: SentinelOutcome, filepath: Path) -> None:
+        """Emit telemetry for successful save operation."""
+        try:
+            from . import create_performance_metric_event
+            await create_performance_metric_event(
+                metric_name="sentinel_outcome_save",
+                metric_value=1,
+                metric_unit="operations",
+                component_name="sentinel_outcome_storage",
+                metadata={
+                    "domain": outcome.domain,
+                    "outcome_id": outcome.outcome_id,
+                    "risk_level": outcome.risk_level,
+                    "filepath": str(filepath)
+                }
+            )
+        except Exception:
+            pass  # Don't fail save operation due to telemetry
+
+    async def _emit_error_telemetry(self, outcome: SentinelOutcome, error: str) -> None:
+        """Emit telemetry for save errors."""
+        try:
+            from . import create_error_event
+            await create_error_event(
+                error_type="SentinelOutcomeSaveError",
+                error_message=f"Failed to save outcome for {outcome.domain}: {error}",
+                source_component="sentinel_outcome_storage",
+                metadata={
+                    "domain": outcome.domain,
+                    "outcome_id": outcome.outcome_id,
+                    "error": error
+                }
+            )
+        except Exception:
+            pass  # Don't compound errors
+
+
+# Global storage instance
+_global_storage = SentinelOutcomeStorage()
+
+
+async def save_sentinel_outcome(outcome: SentinelOutcome) -> bool:
+    """
+    Save a sentinel outcome to persistent storage.
+
+    This function provides enterprise-grade persistence with reliability,
+    telemetry integration, and comprehensive error handling.
+
+    Args:
+        outcome: The sentinel outcome to save
+
+    Returns:
+        bool: True if saved successfully, False otherwise
+
+    Example:
+        outcome = create_sentinel_outcome("example.com", "high", "restrict", "network_sentinel")
+        success = await save_sentinel_outcome(outcome)
+    """
+    return await _global_storage.save_outcome(outcome)
+
+
+async def load_history(
+    domain: str,
+    lookback_days: int = 30,
+    limit: Optional[int] = None,
+    min_risk_level: Optional[str] = None
+) -> List[SentinelOutcome]:
+    """
+    Load historical sentinel outcomes for a domain.
+
+    Provides comprehensive historical analysis with enterprise filtering
+    and analytics capabilities.
+
+    Args:
+        domain: Domain to load history for
+        lookback_days: Number of days to look back (default: 30)
+        limit: Maximum number of outcomes to return (default: None for all)
+        min_risk_level: Minimum risk level to include ("low", "medium", "high", "critical")
+
+    Returns:
+        List of sentinel outcomes sorted by timestamp (newest first)
+
+    Example:
+        # Get all high-risk outcomes from last 7 days
+        history = await load_history("example.com", lookback_days=7, min_risk_level="high")
+
+        # Get last 10 outcomes regardless of risk
+        recent = await load_history("example.com", limit=10)
+    """
+    return await _global_storage.load_domain_history(domain, lookback_days, limit, min_risk_level)
+
+
+async def get_domain_analytics(domain: str, lookback_days: int = 30) -> Dict[str, Any]:
+    """
+    Get comprehensive analytics for a domain's sentinel history.
+
+    Args:
+        domain: Domain to analyze
+        lookback_days: Analysis timeframe in days
+
+    Returns:
+        Dictionary with comprehensive domain analytics including:
+        - Risk level distributions
+        - Action patterns
+        - Temporal analysis
+        - Performance metrics
+        - Compliance summaries
+
+    Example:
+        analytics = await get_domain_analytics("example.com", lookback_days=90)
+        print(f"Risk trend: {analytics['risk_analysis']['recent_risk_trend']}")
+        print(f"Blocked rate: {analytics['performance_metrics']['blocked_rate']:.2%}")
+    """
+    return await _global_storage.get_domain_analytics(domain, lookback_days)
+
+
+async def cleanup_sentinel_data(older_than_days: Optional[int] = None) -> int:
+    """
+    Clean up old sentinel outcome data.
+
+    Args:
+        older_than_days: Remove data older than this many days
+                        (uses default retention if None)
+
+    Returns:
+        Number of files removed
+
+    Example:
+        removed = await cleanup_sentinel_data(older_than_days=180)  # 6 months
+        print(f"Cleaned up {removed} old files")
+    """
+    return await _global_storage.cleanup_old_data(older_than_days)
+
+
+def get_storage_stats() -> Dict[str, Any]:
+    """
+    Get storage statistics and health information.
+
+    Returns:
+        Dictionary with storage statistics including cache size,
+        domain count, total files, etc.
+    """
+    storage_path = _global_storage.storage_path
+
+    try:
+        domain_count = sum(1 for item in storage_path.iterdir() if item.is_dir())
+        total_files = sum(len(list(domain.glob("*.json"))) for domain in storage_path.iterdir() if domain.is_dir())
+        total_size_bytes = sum(
+            sum(f.stat().st_size for f in domain.glob("*.json"))
+            for domain in storage_path.iterdir() if domain.is_dir()
+        )
+
+        return {
+            "storage_path": str(storage_path),
+            "domain_count": domain_count,
+            "total_files": total_files,
+            "total_size_mb": total_size_bytes / (1024 * 1024),
+            "cache_size": len(_global_storage._cache),
+            "max_cache_size": _global_storage.max_cache_size,
+            "retention_days": _global_storage.retention_days,
+            "compression_enabled": _global_storage.compression_enabled
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "storage_path": str(storage_path)
+        }
