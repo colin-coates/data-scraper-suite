@@ -28,7 +28,7 @@ from core.control_models import (
     ScraperType
 )
 from core.models.asset_signal import AssetType, SignalType, Asset
-from scrapers.base_scraper import BaseScraper
+from scrapers.base_scraper import EnhancedBaseScraper as BaseScraper
 from core.intent_classifier import (
     classify_scraping_intent,
     IntentClassification,

@@ -54,8 +54,8 @@ from core.control_models import (
     JobPriority,
     ScraperType
 )
-from .ai_precheck import ai_precheck
-from .mapping.asset_signal_map import (
+from core.base_scraper import ai_precheck
+from core.mapping.asset_signal_map import (
     get_optimal_sources_for_signal,
     calculate_signal_cost_estimate,
     get_data_freshness_requirement,
@@ -190,7 +190,11 @@ class IntentClassifier:
         self._initialize_patterns()
 
         # Load or train ML model
-        asyncio.create_task(self._initialize_ml_model())
+        try:
+            asyncio.create_task(self._initialize_ml_model())
+        except RuntimeError:
+            # No event loop running
+            pass
 
         logger.info("IntentClassifier initialized with ML-enhanced classification")
 

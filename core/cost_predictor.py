@@ -170,7 +170,11 @@ class CostPredictor:
         self.cost_patterns = defaultdict(list)
 
         # Initialize with synthetic training data
-        asyncio.create_task(self._initialize_models())
+        try:
+            asyncio.create_task(self._initialize_models())
+        except RuntimeError:
+            # No event loop running
+            pass
 
         logger.info("CostPredictor initialized with ML-enhanced cost prediction")
 
