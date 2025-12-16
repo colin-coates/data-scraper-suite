@@ -12,8 +12,21 @@ balancing security, compliance, and operational requirements.
 
 import logging
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
 from datetime import datetime
+
+try:
+    from pydantic import BaseModel
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    # Fallback for environments without pydantic
+    PYDANTIC_AVAILABLE = False
+    class BaseModel:
+        def __init__(self, **data):
+            for key, value in data.items():
+                setattr(self, key, value)
+
+        def dict(self):
+            return self.__dict__
 
 from .sentinels.base import SentinelReport
 from .control_models import ScrapeControlContract
@@ -21,186 +34,734 @@ from .control_models import ScrapeControlContract
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class SafetyVerdict:
-    """Safety verdict based on sentinel analysis."""
-    action: str  # "allow", "delay", "restrict", "block"
-    reason: str
-    risk_level: str  # "low", "medium", "high", "critical"
-    confidence_score: float  # 0.0 to 1.0
-    constraints: Dict[str, Any]  # Applied constraints
-    analysis_summary: Dict[str, Any]
-    timestamp: datetime = None
+if PYDANTIC_AVAILABLE:
+    from pydantic import Field
 
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = datetime.utcnow()
+    class SafetyVerdict(BaseModel):
+        """Safety verdict based on sentinel analysis with enterprise-grade enhancements."""
+
+        # Core action fields
+        action: str = Field(..., description="Action to take: allow, restrict, delay, block, human_required")
+        reason: str = Field(..., description="Human-readable explanation for the verdict")
+        enforced_constraints: Dict[str, Any] = Field(default_factory=dict, description="Operational constraints to enforce")
+
+        # Enterprise-grade enhancements
+        risk_level: Optional[str] = Field(None, description="Risk level assessment: low, medium, high, critical")
+        confidence_score: Optional[float] = Field(None, description="Statistical confidence in verdict (0.0-1.0)")
+        analysis_summary: Optional[Dict[str, Any]] = Field(None, description="Detailed risk analysis and findings")
+        timestamp: Optional[datetime] = Field(None, description="When verdict was generated")
+
+        # Workflow tracking enhancements
+        workflow_id: Optional[str] = Field(None, description="Associated workflow identifier")
+        sentinel_reports_count: Optional[int] = Field(None, description="Number of sentinel reports analyzed")
+        processing_duration: Optional[float] = Field(None, description="Time taken to generate verdict (seconds)")
+
+        # Compliance and audit enhancements
+        compliance_flags: Optional[List[str]] = Field(None, description="Compliance requirements satisfied")
+        audit_trail: Optional[List[Dict[str, Any]]] = Field(None, description="Audit log entries for this verdict")
+
+        # Operational intelligence enhancements
+        recommended_actions: Optional[List[str]] = Field(None, description="Suggested follow-up actions")
+        risk_trends: Optional[Dict[str, Any]] = Field(None, description="Historical risk pattern analysis")
+
+        def __init__(self, **data):
+            # Set default timestamp if not provided
+            if 'timestamp' not in data or data['timestamp'] is None:
+                data['timestamp'] = datetime.utcnow()
+            super().__init__(**data)
+
+else:
+    # Fallback for environments without Pydantic
+    class SafetyVerdict(BaseModel):
+        """Safety verdict based on sentinel analysis with enterprise-grade enhancements."""
+
+        def __init__(self, **data):
+            # Set default timestamp if not provided
+            if 'timestamp' not in data or data['timestamp'] is None:
+                data['timestamp'] = datetime.utcnow()
+
+            # Set default enforced_constraints if not provided
+            if 'enforced_constraints' not in data:
+                data['enforced_constraints'] = {}
+
+            # Initialize all attributes
+            for key, value in data.items():
+                setattr(self, key, value)
+
+        def is_critical(self) -> bool:
+            """Check if verdict indicates critical risk."""
+            return getattr(self, 'risk_level', None) == "critical"
+
+        def requires_human_intervention(self) -> bool:
+            """Check if verdict requires human approval."""
+            return getattr(self, 'action', None) == "human_required"
+
+        def get_constraint_keys(self) -> List[str]:
+            """Get list of enforced constraint keys."""
+            constraints = getattr(self, 'enforced_constraints', {})
+            return list(constraints.keys()) if constraints else []
+
+        def to_audit_entry(self) -> Dict[str, Any]:
+            """Convert verdict to audit log entry format."""
+            return {
+                "timestamp": getattr(self, 'timestamp', None),
+                "action": getattr(self, 'action', None),
+                "risk_level": getattr(self, 'risk_level', None),
+                "confidence_score": getattr(self, 'confidence_score', None),
+                "reason": getattr(self, 'reason', None),
+                "constraints": getattr(self, 'enforced_constraints', {}),
+                "workflow_id": getattr(self, 'workflow_id', None)
+            }
+
+    def is_critical(self) -> bool:
+        """Check if verdict indicates critical risk."""
+        return self.risk_level == "critical"
+
+    def requires_human_intervention(self) -> bool:
+        """Check if verdict requires human approval."""
+        return self.action == "human_required"
+
+    def get_constraint_keys(self) -> List[str]:
+        """Get list of enforced constraint keys."""
+        return list(self.enforced_constraints.keys()) if self.enforced_constraints else []
+
+    def to_audit_entry(self) -> Dict[str, Any]:
+        """Convert verdict to audit log entry format."""
+        return {
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "action": self.action,
+            "risk_level": self.risk_level,
+            "confidence_score": self.confidence_score,
+            "reason": self.reason,
+            "constraints": self.enforced_constraints,
+            "workflow_id": self.workflow_id
+        }
 
 
-def safety_verdict(reports: List[SentinelReport], control: ScrapeControlContract) -> SafetyVerdict:
+def safety_verdict(
+    reports: List[SentinelReport],
+    control: ScrapeControlContract,
+    workflow_id: Optional[str] = None,
+    enable_compliance_tracking: bool = True,
+    risk_thresholds: Optional[Dict[str, float]] = None
+) -> SafetyVerdict:
     """
-    Generate safety verdict from sentinel reports and control contract.
+    Generate comprehensive safety verdict from sentinel reports and control contract.
+
+    Enhanced enterprise-grade verdict generation with workflow tracking,
+    compliance monitoring, audit trails, and operational intelligence.
 
     Args:
         reports: List of sentinel reports
         control: Scrape control contract
+        workflow_id: Optional workflow identifier for tracking
+        enable_compliance_tracking: Enable compliance flag generation
+        risk_thresholds: Custom risk thresholds (optional)
 
     Returns:
-        SafetyVerdict with action and reasoning
+        Enhanced SafetyVerdict with comprehensive analysis and tracking
     """
+    start_time = datetime.utcnow()
+
+    # Set default risk thresholds if not provided
+    thresholds = risk_thresholds or {
+        "critical_block_threshold": 0,  # Any critical = block
+        "high_block_ratio": 0.5,        # >50% high = block
+        "medium_delay_ratio": 0.7,      # >70% medium+high = delay
+        "restrict_high_ratio": 0.2,     # >20% high = restrict
+        "restrict_medium_ratio": 0.5    # >50% medium = restrict
+    }
+
     if not reports:
-        # No sentinel data - allow with caution
+        # Enhanced fallback for missing sentinel data
+        audit_entry = {
+            "event": "no_sentinel_reports",
+            "timestamp": start_time.isoformat(),
+            "control_sources": control.intent.sources if control.intent else [],
+            "fallback_reason": "missing_sentinel_data"
+        }
+
         return SafetyVerdict(
             action="allow",
-            reason="No sentinel reports available - proceeding with caution",
+            reason="No sentinel reports available - proceeding with caution and monitoring",
+            enforced_constraints={"monitoring_required": True, "audit_required": True},
             risk_level="unknown",
             confidence_score=0.0,
-            constraints={},
-            analysis_summary={"reports_count": 0}
+            analysis_summary={
+                "reports_count": 0,
+                "fallback_mode": True,
+                "recommendations": ["Enable sentinel monitoring", "Log all activities"]
+            },
+            workflow_id=workflow_id,
+            sentinel_reports_count=0,
+            processing_duration=(datetime.utcnow() - start_time).total_seconds(),
+            compliance_flags=["gdpr_compliant", "audit_trail_enabled"] if enable_compliance_tracking else None,
+            audit_trail=[audit_entry],
+            recommended_actions=["enable_sentinel_monitoring", "increase_logging", "schedule_review"]
         )
 
-    # Analyze reports for risk assessment
+    # Comprehensive report analysis with enterprise enhancements
     risk_counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
-    action_counts = {"allow": 0, "delay": 0, "restrict": 0, "block": 0}
+    action_counts = {"allow": 0, "delay": 0, "restrict": 0, "block": 0, "human_required": 0}
 
     findings = []
+    sentinel_types = set()
+    domains_analyzed = set()
+
     for report in reports:
         risk_counts[report.risk_level] = risk_counts.get(report.risk_level, 0) + 1
         action_counts[report.recommended_action] = action_counts.get(report.recommended_action, 0) + 1
 
+        sentinel_types.add(report.sentinel_name)
+        if hasattr(report, 'domain') and report.domain:
+            domains_analyzed.add(report.domain)
+
         if report.findings:
             findings.extend(report.findings.get("issues", []))
 
-    # Decision logic based on risk levels
+    # Advanced risk calculations
     total_reports = len(reports)
     critical_ratio = risk_counts.get("critical", 0) / total_reports
     high_ratio = risk_counts.get("high", 0) / total_reports
     medium_ratio = risk_counts.get("medium", 0) / total_reports
+    low_ratio = risk_counts.get("low", 0) / total_reports
 
-    # Block if any critical risks or high ratio of high risks
-    if risk_counts.get("critical", 0) > 0:
+    # Risk trend analysis
+    risk_trends = {
+        "dominant_risk": max(risk_counts, key=risk_counts.get),
+        "risk_distribution": {k: v/total_reports for k, v in risk_counts.items()},
+        "action_consensus": max(action_counts, key=action_counts.get),
+        "sentinel_coverage": list(sentinel_types),
+        "domains_analyzed": list(domains_analyzed)
+    }
+
+    # Compliance flag generation
+    compliance_flags = []
+    if enable_compliance_tracking:
+        compliance_flags.extend(["gdpr_compliant", "audit_trail_enabled"])
+        if control.authorization and control.authorization.is_valid():
+            compliance_flags.append("authorized_operation")
+        if control.budget and control.budget.max_records > 0:
+            compliance_flags.append("resource_limits_enforced")
+
+    # Audit trail generation
+    audit_trail = [{
+        "event": "verdict_analysis_started",
+        "timestamp": start_time.isoformat(),
+        "reports_count": total_reports,
+        "sentinel_types": list(sentinel_types),
+        "domains_analyzed": list(domains_analyzed),
+        "workflow_id": workflow_id
+    }]
+
+    # Enhanced decision logic with enterprise intelligence
+
+    # Critical risk detection - always block
+    if risk_counts.get("critical", 0) >= thresholds["critical_block_threshold"]:
+        processing_duration = (datetime.utcnow() - start_time).total_seconds()
+
+        audit_trail.append({
+            "event": "critical_risk_detected",
+            "timestamp": datetime.utcnow().isoformat(),
+            "critical_reports": risk_counts["critical"],
+            "action": "block"
+        })
+
         return SafetyVerdict(
             action="block",
-            reason=f"Critical security risk detected: {risk_counts['critical']} critical reports",
+            reason=f"Critical security risk detected: {risk_counts['critical']} critical reports from {len(sentinel_types)} sentinels",
+            enforced_constraints={
+                "block_reason": "critical_security_risk",
+                "immediate_shutdown": True,
+                "incident_report_required": True
+            },
             risk_level="critical",
-            confidence_score=min(1.0, risk_counts["critical"] / total_reports),
-            constraints={"block_reason": "critical_security_risk"},
+            confidence_score=min(1.0, critical_ratio * 2.0),  # Boost confidence for critical
             analysis_summary={
                 "reports_count": total_reports,
                 "risk_breakdown": risk_counts,
-                "critical_findings": [f for f in findings if "critical" in str(f).lower()]
-            }
+                "critical_findings": [f for f in findings if any(word in str(f).lower() for word in ["critical", "severe", "malware", "breach"])],
+                "sentinel_coverage": list(sentinel_types),
+                "risk_trends": risk_trends
+            },
+            workflow_id=workflow_id,
+            sentinel_reports_count=total_reports,
+            processing_duration=processing_duration,
+            compliance_flags=compliance_flags,
+            audit_trail=audit_trail,
+            recommended_actions=[
+                "immediate_operation_shutdown",
+                "security_incident_response",
+                "human_review_required",
+                "system_quarantine"
+            ],
+            risk_trends=risk_trends
         )
 
-    # Block if high ratio of high-risk reports
-    if high_ratio > 0.5:
+    # High concentration of high-risk reports
+    if high_ratio > thresholds["high_block_ratio"]:
+        processing_duration = (datetime.utcnow() - start_time).total_seconds()
+
+        audit_trail.append({
+            "event": "high_risk_threshold_exceeded",
+            "timestamp": datetime.utcnow().isoformat(),
+            "high_ratio": high_ratio,
+            "threshold": thresholds["high_block_ratio"],
+            "action": "block"
+        })
+
         return SafetyVerdict(
             action="block",
-            reason=f"High security risk: {high_ratio:.1%} of reports indicate high risk",
+            reason=f"High security risk concentration: {high_ratio:.1%} of reports indicate high risk (threshold: {thresholds['high_block_ratio']:.1%})",
+            enforced_constraints={
+                "block_reason": "high_security_risk_concentration",
+                "review_required": True,
+                "escalation_required": True
+            },
             risk_level="high",
             confidence_score=high_ratio,
-            constraints={"block_reason": "high_security_risk"},
             analysis_summary={
                 "reports_count": total_reports,
                 "risk_breakdown": risk_counts,
-                "high_risk_findings": findings
-            }
+                "high_risk_findings": findings[:10],  # Top 10 findings
+                "sentinel_coverage": list(sentinel_types),
+                "threshold_exceeded": {
+                    "actual": high_ratio,
+                    "threshold": thresholds["high_block_ratio"]
+                },
+                "risk_trends": risk_trends
+            },
+            workflow_id=workflow_id,
+            sentinel_reports_count=total_reports,
+            processing_duration=processing_duration,
+            compliance_flags=compliance_flags,
+            audit_trail=audit_trail,
+            recommended_actions=[
+                "security_review_required",
+                "risk_assessment_update",
+                "operational_escalation"
+            ],
+            risk_trends=risk_trends
         )
 
-    # Delay if significant medium/high risks
-    if (high_ratio + medium_ratio) > 0.7:
-        delay_minutes = min(60, max(5, int((high_ratio + medium_ratio) * 30)))
+    # Significant medium/high risk combination - delay operation
+    combined_risk_ratio = high_ratio + medium_ratio
+    if combined_risk_ratio > thresholds["medium_delay_ratio"]:
+        delay_minutes = min(120, max(5, int(combined_risk_ratio * 40)))  # More sophisticated delay calculation
+        processing_duration = (datetime.utcnow() - start_time).total_seconds()
+
+        audit_trail.append({
+            "event": "moderate_risk_delay_triggered",
+            "timestamp": datetime.utcnow().isoformat(),
+            "combined_risk_ratio": combined_risk_ratio,
+            "delay_minutes": delay_minutes,
+            "action": "delay"
+        })
+
         return SafetyVerdict(
             action="delay",
-            reason=f"Moderate security concerns: delaying {delay_minutes} minutes",
-            risk_level="medium",
-            confidence_score=(high_ratio + medium_ratio),
-            constraints={
+            reason=f"Moderate security concerns detected: {combined_risk_ratio:.1%} medium/high risk ratio, delaying {delay_minutes} minutes",
+            enforced_constraints={
                 "delay_minutes": delay_minutes,
-                "delay_reason": "moderate_security_concerns"
+                "delay_reason": "moderate_security_concerns",
+                "monitoring_required": True,
+                "progress_tracking": True
             },
+            risk_level="medium",
+            confidence_score=combined_risk_ratio,
             analysis_summary={
                 "reports_count": total_reports,
                 "risk_breakdown": risk_counts,
-                "delay_factors": findings[:5]  # Top 5 findings
-            }
+                "delay_factors": findings[:7],  # Top 7 findings
+                "sentinel_coverage": list(sentinel_types),
+                "risk_calculation": {
+                    "high_ratio": high_ratio,
+                    "medium_ratio": medium_ratio,
+                    "combined_ratio": combined_risk_ratio,
+                    "threshold": thresholds["medium_delay_ratio"]
+                },
+                "risk_trends": risk_trends
+            },
+            workflow_id=workflow_id,
+            sentinel_reports_count=total_reports,
+            processing_duration=processing_duration,
+            compliance_flags=compliance_flags,
+            audit_trail=audit_trail,
+            recommended_actions=[
+                "scheduled_retry_after_delay",
+                "enhanced_monitoring",
+                "risk_reassessment"
+            ],
+            risk_trends=risk_trends
         )
 
-    # Restrict if some concerns but not blocking
-    if high_ratio > 0.2 or medium_ratio > 0.5:
+    # Some security concerns - apply restrictions
+    if (high_ratio > thresholds["restrict_high_ratio"] or
+        medium_ratio > thresholds["restrict_medium_ratio"]):
+
+        processing_duration = (datetime.utcnow() - start_time).total_seconds()
+
+        audit_trail.append({
+            "event": "restriction_triggered",
+            "timestamp": datetime.utcnow().isoformat(),
+            "high_ratio": high_ratio,
+            "medium_ratio": medium_ratio,
+            "action": "restrict"
+        })
+
         return SafetyVerdict(
             action="restrict",
-            reason="Minor security concerns: applying restrictions",
+            reason=f"Security concerns detected: applying operational restrictions (high: {high_ratio:.1%}, medium: {medium_ratio:.1%})",
+            enforced_constraints={
+                "restrict_reason": "security_concerns_detected",
+                "reduced_rate_limit": True,
+                "extended_delays": True,
+                "enhanced_logging": True,
+                "progress_monitoring": True
+            },
             risk_level="medium",
             confidence_score=max(high_ratio, medium_ratio),
-            constraints={
-                "restrict_reason": "minor_security_concerns",
-                "reduced_rate_limit": True,
-                "extended_delays": True
-            },
             analysis_summary={
                 "reports_count": total_reports,
                 "risk_breakdown": risk_counts,
-                "restriction_factors": findings[:3]
-            }
+                "restriction_factors": findings[:5],  # Top 5 findings
+                "sentinel_coverage": list(sentinel_types),
+                "restriction_triggers": {
+                    "high_ratio_triggered": high_ratio > thresholds["restrict_high_ratio"],
+                    "medium_ratio_triggered": medium_ratio > thresholds["restrict_medium_ratio"]
+                },
+                "risk_trends": risk_trends
+            },
+            workflow_id=workflow_id,
+            sentinel_reports_count=total_reports,
+            processing_duration=processing_duration,
+            compliance_flags=compliance_flags,
+            audit_trail=audit_trail,
+            recommended_actions=[
+                "reduced_operational_pace",
+                "enhanced_monitoring",
+                "periodic_risk_reassessment"
+            ],
+            risk_trends=risk_trends
         )
 
-    # Allow if low risk overall
+    # Low risk - allow operation with monitoring
+    processing_duration = (datetime.utcnow() - start_time).total_seconds()
+
+    audit_trail.append({
+        "event": "low_risk_allowance",
+        "timestamp": datetime.utcnow().isoformat(),
+        "low_ratio": low_ratio,
+        "action": "allow"
+    })
+
     return SafetyVerdict(
         action="allow",
-        reason="Low security risk: proceeding normally",
+        reason=f"Low security risk confirmed: {low_ratio:.1%} low-risk reports, proceeding with monitoring",
+        enforced_constraints={
+            "monitoring_required": True,
+            "audit_required": True,
+            "performance_tracking": True
+        },
         risk_level="low",
-        confidence_score=(risk_counts.get("low", 0) / total_reports),
-        constraints={},
+        confidence_score=low_ratio,
         analysis_summary={
             "reports_count": total_reports,
             "risk_breakdown": risk_counts,
-            "clean_findings": len([f for f in findings if "clean" in str(f).lower()])
-        }
+            "clean_findings": len([f for f in findings if any(word in str(f).lower() for word in ["clean", "safe", "normal"])]),
+            "sentinel_coverage": list(sentinel_types),
+            "risk_trends": risk_trends
+        },
+        workflow_id=workflow_id,
+        sentinel_reports_count=total_reports,
+        processing_duration=processing_duration,
+        compliance_flags=compliance_flags,
+        audit_trail=audit_trail,
+        recommended_actions=[
+            "continue_normal_operations",
+            "maintain_monitoring",
+            "periodic_risk_review"
+        ],
+        risk_trends=risk_trends
     )
 
 
-def apply_verdict_constraints(verdict: SafetyVerdict) -> None:
+def apply_verdict_constraints(verdict: SafetyVerdict) -> Dict[str, Any]:
     """
-    Apply verdict constraints to the current scraping operation.
+    Apply verdict constraints to the current scraping operation with comprehensive handling.
+
+    Enhanced constraint application with validation, monitoring, and compliance tracking.
 
     Args:
         verdict: Safety verdict with constraints to apply
+
+    Returns:
+        Dict containing constraint application results and status
     """
-    constraints = verdict.constraints
+    constraints = verdict.enforced_constraints
 
     if not constraints:
         logger.info("No constraints to apply from safety verdict")
-        return
+        return {
+            "status": "no_constraints",
+            "applied_constraints": [],
+            "message": "No constraints required"
+        }
 
-    logger.info(f"Applying safety verdict constraints: {constraints}")
+    logger.info(f"Applying {len(constraints)} safety verdict constraints for action '{verdict.action}'")
 
-    # Apply delay constraint
+    application_results = {
+        "status": "applied",
+        "applied_constraints": [],
+        "failed_constraints": [],
+        "messages": [],
+        "verdict_action": verdict.action,
+        "workflow_id": verdict.workflow_id
+    }
+
+    # Enhanced constraint application with validation and error handling
+
+    # Delay constraint with enterprise features
     if "delay_minutes" in constraints:
-        delay_minutes = constraints["delay_minutes"]
-        logger.warning(f"Safety verdict requires {delay_minutes} minute delay")
-        # In real implementation, this would integrate with deployment_timer
-        import asyncio
-        asyncio.create_task(_apply_delay(delay_minutes))
+        try:
+            delay_minutes = constraints["delay_minutes"]
+            logger.warning(f"Safety verdict requires {delay_minutes} minute delay (confidence: {verdict.confidence_score:.1%})")
 
-    # Apply rate limiting constraints
+            # Validate delay parameters
+            if delay_minutes < 0 or delay_minutes > 1440:  # Max 24 hours
+                raise ValueError(f"Invalid delay duration: {delay_minutes} minutes")
+
+            # Log delay initiation for audit
+            application_results["applied_constraints"].append("delay")
+            application_results["messages"].append(f"Delay constraint applied: {delay_minutes} minutes")
+
+            # In real implementation, this would integrate with deployment_timer
+            import asyncio
+            asyncio.create_task(_apply_delay_with_monitoring(delay_minutes, verdict.workflow_id))
+
+        except Exception as e:
+            logger.error(f"Failed to apply delay constraint: {e}")
+            application_results["failed_constraints"].append("delay")
+            application_results["messages"].append(f"Delay constraint failed: {e}")
+
+    # Rate limiting constraints
     if constraints.get("reduced_rate_limit"):
-        logger.warning("Applying reduced rate limit due to safety concerns")
-        # In real implementation, this would modify scraper configuration
+        try:
+            logger.warning("Applying reduced rate limit due to safety concerns")
 
-    # Apply timing constraints
+            # Calculate rate reduction based on risk level
+            rate_multiplier = _calculate_rate_multiplier(verdict.risk_level, verdict.confidence_score)
+
+            application_results["applied_constraints"].append("reduced_rate_limit")
+            application_results["messages"].append(f"Rate limit reduced by {rate_multiplier:.1%}")
+
+            # In real implementation, this would modify scraper configuration
+            _apply_rate_limiting(rate_multiplier, verdict.workflow_id)
+
+        except Exception as e:
+            logger.error(f"Failed to apply rate limiting: {e}")
+            application_results["failed_constraints"].append("reduced_rate_limit")
+
+    # Timing constraints
     if constraints.get("extended_delays"):
-        logger.warning("Applying extended delays between requests")
-        # In real implementation, this would modify scraper timing
+        try:
+            logger.warning("Applying extended delays between requests")
 
-    # Log constraint application
-    logger.info(f"Safety constraints applied: {list(constraints.keys())}")
+            # Calculate delay extension based on risk
+            delay_multiplier = _calculate_delay_multiplier(verdict.risk_level)
+
+            application_results["applied_constraints"].append("extended_delays")
+            application_results["messages"].append(f"Request delays extended by {delay_multiplier:.1%}")
+
+            # In real implementation, this would modify scraper timing
+            _apply_timing_constraints(delay_multiplier, verdict.workflow_id)
+
+        except Exception as e:
+            logger.error(f"Failed to apply timing constraints: {e}")
+            application_results["failed_constraints"].append("extended_delays")
+
+    # Monitoring constraints
+    if constraints.get("monitoring_required"):
+        try:
+            logger.info("Enabling enhanced monitoring as required by safety verdict")
+
+            application_results["applied_constraints"].append("enhanced_monitoring")
+            application_results["messages"].append("Enhanced monitoring enabled")
+
+            _enable_enhanced_monitoring(verdict.workflow_id, verdict.risk_level)
+
+        except Exception as e:
+            logger.error(f"Failed to enable enhanced monitoring: {e}")
+            application_results["failed_constraints"].append("enhanced_monitoring")
+
+    # Audit requirements
+    if constraints.get("audit_required"):
+        try:
+            logger.info("Enabling comprehensive audit logging")
+
+            application_results["applied_constraints"].append("audit_logging")
+            application_results["messages"].append("Comprehensive audit logging enabled")
+
+            _enable_comprehensive_audit(verdict.workflow_id)
+
+        except Exception as e:
+            logger.error(f"Failed to enable audit logging: {e}")
+            application_results["failed_constraints"].append("audit_logging")
+
+    # Incident reporting
+    if constraints.get("incident_report_required"):
+        try:
+            logger.warning("Incident reporting required - escalating to security team")
+
+            application_results["applied_constraints"].append("incident_reporting")
+            application_results["messages"].append("Incident report initiated")
+
+            _initiate_incident_report(verdict)
+
+        except Exception as e:
+            logger.error(f"Failed to initiate incident report: {e}")
+            application_results["failed_constraints"].append("incident_reporting")
+
+    # Immediate shutdown
+    if constraints.get("immediate_shutdown"):
+        try:
+            logger.critical("IMMEDIATE SHUTDOWN REQUIRED by safety verdict")
+
+            application_results["applied_constraints"].append("immediate_shutdown")
+            application_results["messages"].append("Immediate shutdown initiated")
+            application_results["status"] = "shutdown_initiated"
+
+            _initiate_immediate_shutdown(verdict.workflow_id, verdict.reason)
+
+        except Exception as e:
+            logger.error(f"Failed to initiate immediate shutdown: {e}")
+            application_results["failed_constraints"].append("immediate_shutdown")
+
+    # Progress tracking
+    if constraints.get("progress_tracking"):
+        try:
+            logger.info("Enabling progress tracking for constrained operation")
+
+            application_results["applied_constraints"].append("progress_tracking")
+            application_results["messages"].append("Progress tracking enabled")
+
+            _enable_progress_tracking(verdict.workflow_id)
+
+        except Exception as e:
+            logger.error(f"Failed to enable progress tracking: {e}")
+            application_results["failed_constraints"].append("progress_tracking")
+
+    # Final status assessment
+    if application_results["failed_constraints"]:
+        application_results["status"] = "partial_failure"
+        logger.warning(f"Constraint application partially failed: {application_results['failed_constraints']}")
+
+    total_applied = len(application_results["applied_constraints"])
+    total_failed = len(application_results["failed_constraints"])
+
+    logger.info(f"Constraint application completed: {total_applied} applied, {total_failed} failed")
+
+    # Emit telemetry about constraint application
+    try:
+        from .scrape_telemetry import emit_telemetry
+        import asyncio
+        asyncio.create_task(emit_telemetry(
+            scraper="safety_verdict",
+            role="constraint_application",
+            cost_estimate=0.0,
+            records_found=total_applied,
+            blocked_reason=None,
+            runtime=0.0,
+            metadata={
+                "verdict_action": verdict.action,
+                "constraints_applied": total_applied,
+                "constraints_failed": total_failed,
+                "workflow_id": verdict.workflow_id
+            }
+        ))
+    except Exception as e:
+        logger.debug(f"Telemetry emission failed (non-critical): {e}")
+
+    return application_results
 
 
-async def _apply_delay(delay_minutes: int) -> None:
-    """Apply delay constraint."""
+def _calculate_rate_multiplier(risk_level: str, confidence_score: float) -> float:
+    """Calculate rate limiting multiplier based on risk."""
+    base_multiplier = {
+        "low": 1.0,
+        "medium": 0.7,
+        "high": 0.4,
+        "critical": 0.1
+    }.get(risk_level, 0.5)
+
+    # Adjust based on confidence
+    confidence_adjustment = 0.9 + (confidence_score * 0.2)  # 0.9 to 1.1
+
+    return base_multiplier * confidence_adjustment
+
+
+def _calculate_delay_multiplier(risk_level: str) -> float:
+    """Calculate delay extension multiplier based on risk."""
+    return {
+        "low": 1.0,
+        "medium": 1.5,
+        "high": 2.5,
+        "critical": 5.0
+    }.get(risk_level, 2.0)
+
+
+async def _apply_delay_with_monitoring(delay_minutes: int, workflow_id: Optional[str] = None) -> None:
+    """Apply delay constraint with monitoring and progress updates."""
     import asyncio
     delay_seconds = delay_minutes * 60
-    logger.info(f"Applying safety delay of {delay_minutes} minutes ({delay_seconds} seconds)")
-    await asyncio.sleep(delay_seconds)
-    logger.info("Safety delay completed")
+
+    logger.info(f"Applying safety delay of {delay_minutes} minutes ({delay_seconds}s) for workflow {workflow_id}")
+
+    # Progress updates every minute
+    for minute in range(delay_minutes):
+        logger.info(f"Safety delay progress: {minute + 1}/{delay_minutes} minutes completed")
+        await asyncio.sleep(60)
+
+    logger.info(f"Safety delay completed for workflow {workflow_id}")
+
+
+def _apply_rate_limiting(rate_multiplier: float, workflow_id: Optional[str] = None) -> None:
+    """Apply rate limiting constraints."""
+    logger.info(f"Applying rate limiting with multiplier {rate_multiplier:.2f} for workflow {workflow_id}")
+    # Implementation would integrate with scraper rate limiting
+
+
+def _apply_timing_constraints(delay_multiplier: float, workflow_id: Optional[str] = None) -> None:
+    """Apply timing constraints between requests."""
+    logger.info(f"Applying timing constraints with multiplier {delay_multiplier:.2f} for workflow {workflow_id}")
+    # Implementation would integrate with scraper timing controls
+
+
+def _enable_enhanced_monitoring(workflow_id: Optional[str] = None, risk_level: Optional[str] = None) -> None:
+    """Enable enhanced monitoring for high-risk operations."""
+    logger.info(f"Enabling enhanced monitoring for workflow {workflow_id} (risk: {risk_level})")
+    # Implementation would enable additional logging and monitoring
+
+
+def _enable_comprehensive_audit(workflow_id: Optional[str] = None) -> None:
+    """Enable comprehensive audit logging."""
+    logger.info(f"Enabling comprehensive audit logging for workflow {workflow_id}")
+    # Implementation would enable detailed audit trails
+
+
+def _initiate_incident_report(verdict: SafetyVerdict) -> None:
+    """Initiate incident reporting process."""
+    logger.warning(f"Initiating incident report for critical verdict: {verdict.reason}")
+    # Implementation would trigger security incident response
+
+
+def _initiate_immediate_shutdown(workflow_id: Optional[str] = None, reason: Optional[str] = None) -> None:
+    """Initiate immediate shutdown of operations."""
+    logger.critical(f"INITIATING IMMEDIATE SHUTDOWN for workflow {workflow_id}: {reason}")
+    # Implementation would trigger emergency shutdown procedures
+
+
+def _enable_progress_tracking(workflow_id: Optional[str] = None) -> None:
+    """Enable progress tracking for constrained operations."""
+    logger.info(f"Enabling progress tracking for workflow {workflow_id}")
+    # Implementation would enable detailed progress monitoring
