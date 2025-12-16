@@ -26,6 +26,9 @@ from .base import (
     stop_all_sentinels
 )
 
+from .performance_sentinel import PerformanceSentinel, create_performance_sentinel
+from .network_sentinel import NetworkSentinel, create_network_sentinel
+
 __all__ = [
     'BaseSentinel',
     'SentinelReport',
@@ -34,6 +37,10 @@ __all__ = [
     'SentinelAlert',
     'SentinelSeverity',
     'SentinelStatus',
+    'PerformanceSentinel',
+    'NetworkSentinel',
+    'create_performance_sentinel',
+    'create_network_sentinel',
     'register_sentinel',
     'unregister_sentinel',
     'get_registered_sentinels',
