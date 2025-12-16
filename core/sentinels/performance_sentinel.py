@@ -31,6 +31,8 @@ class PerformanceSentinel(BaseSentinel):
     name = "performance_sentinel"
 
     def __init__(self):
+        super().__init__()
+
         # Performance thresholds
         self.min_success_rate = 0.8  # 80% success rate minimum
         self.max_avg_response_time = 30.0  # 30 seconds maximum average

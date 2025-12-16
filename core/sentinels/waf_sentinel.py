@@ -39,6 +39,8 @@ class WafSentinel(BaseSentinel):
     name = "waf_sentinel"
 
     def __init__(self):
+        super().__init__()
+
         # WAF detection patterns and signatures
         self.waf_signatures = {
             "cloudflare": {

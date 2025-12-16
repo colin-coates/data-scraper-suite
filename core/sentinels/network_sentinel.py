@@ -42,6 +42,8 @@ class NetworkSentinel(BaseSentinel):
     name = "network_sentinel"
 
     def __init__(self):
+        super().__init__()
+
         # Network monitoring thresholds
         self.max_dns_resolution_time = 5.0  # seconds
         self.max_connect_time = 10.0  # seconds

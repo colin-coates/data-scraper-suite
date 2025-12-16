@@ -13,10 +13,11 @@ Sentinels probe targets and return structured reports with risk assessments and 
 import asyncio
 import logging
 import time
+import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, Callable
 from collections import defaultdict, deque
 
 try:
@@ -31,7 +32,8 @@ except ImportError:
         def dict(self):
             return self.__dict__
 
-from ..scrape_telemetry import get_global_telemetry_collector
+from ..scrape_telemetry import get_global_telemetry_collector, emit_telemetry
+from ..retry_utils import retry_async, RetryConfig, retry_on_network_errors
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +46,54 @@ class SentinelReport(BaseModel):
     risk_level: str  # "low" | "medium" | "high" | "critical"
     findings: Dict[str, Any]
     recommended_action: str  # "allow" | "restrict" | "delay" | "block"
+    request_id: str = ""  # Unique request identifier
+    response_time: float = 0.0  # Time taken for probe
+    retry_count: int = 0  # Number of retries attempted
+    success: bool = True  # Whether probe completed successfully
+    error_message: Optional[str] = None  # Error details if probe failed
+
+    def emit_telemetry(self) -> None:
+        """Emit telemetry data for this sentinel probe."""
+        try:
+            emit_telemetry(
+                scraper=self.sentinel_name,
+                role=self.domain,
+                cost_estimate=self.response_time * 0.001,  # Rough cost estimate
+                records_found=len(self.findings) if self.findings else 0,
+                runtime=self.response_time,
+                blocked_reason=self.recommended_action if self.recommended_action in ["restrict", "block"] else ""
+            )
+        except Exception as e:
+            logger.warning(f"Failed to emit telemetry for sentinel {self.sentinel_name}: {e}")
 
 
 class BaseSentinel(ABC):
     """Base class for all sentinels in the MJ Data Scraper Suite."""
 
     name: str
+
+    def __init__(self):
+        # Metrics tracking (similar to BaseScraper)
+        self.probes_attempted = 0
+        self.probes_successful = 0
+        self.probes_failed = 0
+        self.start_time = time.time()
+        self.last_probe_time = 0.0
+
+        # Callbacks (similar to BaseScraper)
+        self.on_error: Optional[Callable[[Exception, Dict[str, Any]], None]] = None
+        self.on_success: Optional[Callable[[SentinelReport], None]] = None
+        self.on_retry: Optional[Callable[[int, Exception], None]] = None
+
+        # Retry configuration
+        self.retry_config = RetryConfig(
+            max_attempts=3,
+            base_delay=1.0,
+            max_delay=10.0,
+            backoff_factor=2.0,
+            retry_on_exceptions=(ConnectionError, TimeoutError, OSError, asyncio.TimeoutError),
+            retry_on_status_codes=(429, 500, 502, 503, 504)
+        )
 
     @abstractmethod
     async def probe(self, target: Dict[str, Any]) -> SentinelReport:
@@ -64,35 +108,131 @@ class BaseSentinel(ABC):
         """
         pass
 
-    async def probe_with_fallback(self, target: Dict[str, Any]) -> SentinelReport:
+    async def probe_with_retry(self, target: Dict[str, Any]) -> SentinelReport:
         """
-        Probe with error handling and fallback reporting.
+        Probe with automatic retry logic and comprehensive error handling.
 
         Args:
             target: Target information to probe
 
         Returns:
-            SentinelReport, with error details if probing fails
+            SentinelReport with retry tracking and error details if needed
         """
-        try:
-            return await self.probe(target)
-        except Exception as e:
-            logger.error(f"Sentinel {self.name} probe failed for target {target}: {e}")
-            return SentinelReport(
-                sentinel_name=self.name,
-                domain="error",
-                timestamp=datetime.utcnow(),
-                risk_level="critical",
-                findings={"error": str(e), "target": target},
-                recommended_action="block"
-            )
+        request_id = str(uuid.uuid4())
+        start_time = time.time()
+        retry_count = 0
+
+        # Implement simple retry logic
+        max_attempts = self.retry_config.max_attempts
+        base_delay = self.retry_config.base_delay
+
+        for attempt in range(max_attempts):
+            try:
+                self.probes_attempted += 1
+                self.last_probe_time = start_time
+
+                # Execute the probe
+                report = await self.probe(target)
+
+                # Update metrics
+                self.probes_successful += 1
+                response_time = time.time() - start_time
+
+                # Enhance report with additional metadata
+                report.request_id = request_id
+                report.response_time = response_time
+                report.retry_count = retry_count
+                report.success = True
+
+                # Emit telemetry
+                report.emit_telemetry()
+
+                # Call success callback
+                if self.on_success:
+                    try:
+                        self.on_success(report)
+                    except Exception as e:
+                        logger.warning(f"Success callback failed for sentinel {self.name}: {e}")
+
+                return report
+
+            except Exception as e:
+                retry_count = attempt
+                response_time = time.time() - start_time
+
+                # Check if we should retry
+                if attempt < max_attempts - 1 and self._should_retry(e):
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"Sentinel {self.name} probe attempt {attempt + 1} failed, retrying in {delay}s: {e}")
+
+                    # Call retry callback
+                    if self.on_retry:
+                        try:
+                            self.on_retry(attempt + 1, e)
+                        except Exception as callback_error:
+                            logger.warning(f"Retry callback failed for sentinel {self.name}: {callback_error}")
+
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    # Final failure
+                    self.probes_failed += 1
+                    logger.error(f"Sentinel {self.name} probe failed after {attempt + 1} attempts for target {target}: {e}")
+
+                    # Call error callback
+                    if self.on_error:
+                        try:
+                            self.on_error(e, target)
+                        except Exception as callback_error:
+                            logger.warning(f"Error callback failed for sentinel {self.name}: {callback_error}")
+
+                    # Return error report
+                    return SentinelReport(
+                        sentinel_name=self.name,
+                        domain="error",
+                        timestamp=datetime.utcnow(),
+                        risk_level="critical",
+                        findings={"error": str(e), "target": target, "error_type": type(e).__name__},
+                        recommended_action="block",
+                        request_id=request_id,
+                        response_time=response_time,
+                        retry_count=retry_count,
+                        success=False,
+                        error_message=str(e)
+                    )
+
+    def _should_retry(self, exception: Exception) -> bool:
+        """Determine if an exception should trigger a retry."""
+        exception_types = tuple(self.retry_config.retry_on_exceptions)
+        return isinstance(exception, exception_types)
+
+    async def probe_with_fallback(self, target: Dict[str, Any]) -> SentinelReport:
+        """
+        Legacy method for backward compatibility.
+        Use probe_with_retry for enhanced functionality.
+        """
+        return await self.probe_with_retry(target)
 
     def get_sentinel_info(self) -> Dict[str, Any]:
-        """Get basic information about this sentinel."""
+        """Get comprehensive information about this sentinel."""
+        uptime = time.time() - self.start_time
         return {
             "name": self.name,
             "type": self.__class__.__name__,
-            "module": self.__class__.__module__
+            "module": self.__class__.__module__,
+            "metrics": {
+                "probes_attempted": self.probes_attempted,
+                "probes_successful": self.probes_successful,
+                "probes_failed": self.probes_failed,
+                "success_rate": (self.probes_successful / self.probes_attempted) if self.probes_attempted > 0 else 0.0,
+                "uptime_seconds": uptime,
+                "last_probe_time": self.last_probe_time
+            },
+            "retry_config": {
+                "max_attempts": self.retry_config.max_attempts,
+                "base_delay": self.retry_config.base_delay,
+                "max_delay": self.retry_config.max_delay
+            }
         }
 
 
@@ -114,12 +254,22 @@ class SentinelStatus(Enum):
 
 class SentinelAlert:
     """Alert generated by a sentinel."""
-    def __init__(self, sentinel_name: str, severity: SentinelSeverity, message: str,
+    def __init__(self, sentinel_name: str, severity: Union[SentinelSeverity, str], message: str,
                  details: Optional[Dict[str, Any]] = None, timestamp: Optional[datetime] = None,
                  resolved: bool = False, resolved_at: Optional[datetime] = None,
                  alert_id: Optional[str] = None):
         self.sentinel_name = sentinel_name
-        self.severity = severity
+        # Convert string severity to enum if needed
+        if isinstance(severity, str):
+            severity_map = {
+                "info": SentinelSeverity.INFO,
+                "warning": SentinelSeverity.WARNING,
+                "error": SentinelSeverity.ERROR,
+                "critical": SentinelSeverity.CRITICAL
+            }
+            self.severity = severity_map.get(severity.lower(), SentinelSeverity.WARNING)
+        else:
+            self.severity = severity
         self.message = message
         self.details = details or {}
         self.timestamp = timestamp or datetime.utcnow()
@@ -138,7 +288,7 @@ class SentinelAlert:
         return {
             "alert_id": self.alert_id,
             "sentinel_name": self.sentinel_name,
-            "severity": self.severity.value,
+            "severity": self.severity.name if hasattr(self.severity, 'name') else str(self.severity),
             "message": self.message,
             "details": self.details,
             "timestamp": self.timestamp.isoformat(),
@@ -205,15 +355,15 @@ class SentinelRunner:
 
     async def probe_target(self, target: Dict[str, Any]) -> SentinelReport:
         """
-        Execute a probe and handle the results.
+        Execute a probe with retry logic and handle the results.
 
         Args:
             target: Target to probe
 
         Returns:
-            SentinelReport from the probe
+            SentinelReport from the probe with enhanced metadata
         """
-        report = await self.sentinel.probe_with_fallback(target)
+        report = await self.sentinel.probe_with_retry(target)
         self.last_report = report
 
         # Handle report based on risk level and recommended action
@@ -293,7 +443,8 @@ class SentinelRunner:
         # Send alert to configured channels
         await self._send_alert_to_channels(alert)
 
-        logger.warning(f"Sentinel {self.sentinel.name} generated {alert.severity.value} alert: {alert.message}")
+        severity_str = alert.severity.name if hasattr(alert.severity, 'name') else str(alert.severity)
+        logger.warning(f"Sentinel {self.sentinel.name} generated {severity_str} alert: {alert.message}")
 
     async def _resolve_active_alerts(self):
         """Resolve all active alerts."""
