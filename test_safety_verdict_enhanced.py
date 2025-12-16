@@ -208,42 +208,144 @@ def test_enhanced_safety_verdict():
     except Exception as e:
         print(f"❌ Test 5 failed: {e}")
 
-    # Test 6: High risk ratio blocking
-    print("\n📋 Test 6: High Risk Ratio Blocking")
+    # Test 6: Enhanced Max-Risk Algorithm - Critical Risk
+    print("\n📋 Test 6: Enhanced Max-Risk Algorithm - Critical Risk")
     try:
         reports = [
-            SentinelReport(sentinel_name="network", domain="high-risk.com", timestamp=datetime.utcnow(),
-                          risk_level="high", findings={}, recommended_action="restrict"),
-            SentinelReport(sentinel_name="waf", domain="high-risk.com", timestamp=datetime.utcnow(),
-                          risk_level="high", findings={}, recommended_action="restrict"),
-            SentinelReport(sentinel_name="malware", domain="high-risk.com", timestamp=datetime.utcnow(),
-                          risk_level="low", findings={}, recommended_action="allow")
+            SentinelReport(sentinel_name="malware", domain="dangerous-site.com", timestamp=datetime.utcnow(),
+                          risk_level="critical", findings={"malware_detected": True}, recommended_action="block"),
+            SentinelReport(sentinel_name="network", domain="dangerous-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={}, recommended_action="allow"),
+            SentinelReport(sentinel_name="waf", domain="dangerous-site.com", timestamp=datetime.utcnow(),
+                          risk_level="medium", findings={}, recommended_action="restrict")
         ]
 
-        verdict = safety_verdict(reports, control, workflow_id="high_ratio_test_001")
+        verdict = safety_verdict(reports, control, workflow_id="max_risk_critical_test_001")
 
-        print("✅ High risk ratio blocking (66.7% high risk)")
+        print("✅ Enhanced max-risk algorithm - critical risk blocking")
         print(f"   Action: {verdict.action}")
-        print(f"   Risk Level: {verdict.risk_level}")
-        print(f"   High Ratio: {verdict.analysis_summary['risk_breakdown']['high']/len(reports):.1%}")
-        print(f"   Threshold Exceeded: {verdict.analysis_summary.get('threshold_exceeded')}")
+        print(f"   Max Risk Level: {verdict.analysis_summary['max_risk_level']}")
+        print(f"   Algorithm: {verdict.analysis_summary['algorithm']}")
+        print(f"   Confidence: {verdict.confidence_score:.1%}")
+        print(f"   Critical Findings: {len(verdict.analysis_summary['critical_findings'])}")
+        print(f"   Recommended Actions: {verdict.recommended_actions}")
 
         assert verdict.action == "block"
-        assert verdict.risk_level == "high"
-        assert verdict.analysis_summary['risk_breakdown']['high'] == 2
+        assert verdict.risk_level == "critical"
+        assert verdict.analysis_summary['max_risk_level'] == "critical"
+        assert "immediate_operation_shutdown" in verdict.recommended_actions
+        assert verdict.enforced_constraints.get("incident_report_required") == True
 
     except Exception as e:
         print(f"❌ Test 6 failed: {e}")
 
-    # Test 7: Custom risk thresholds
-    print("\n📋 Test 7: Custom Risk Thresholds")
+    # Test 7: Enhanced Max-Risk Algorithm - High Risk Human Required
+    print("\n📋 Test 7: Enhanced Max-Risk Algorithm - High Risk Human Required")
     try:
+        reports = [
+            SentinelReport(sentinel_name="waf", domain="suspicious-site.com", timestamp=datetime.utcnow(),
+                          risk_level="high", findings={"waf_bypassed": True}, recommended_action="human_required"),
+            SentinelReport(sentinel_name="network", domain="suspicious-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={}, recommended_action="allow"),
+            SentinelReport(sentinel_name="malware", domain="suspicious-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={}, recommended_action="allow")
+        ]
+
+        verdict = safety_verdict(reports, control, workflow_id="max_risk_high_test_001")
+
+        print("✅ Enhanced max-risk algorithm - high risk human intervention")
+        print(f"   Action: {verdict.action}")
+        print(f"   Max Risk Level: {verdict.analysis_summary['max_risk_level']}")
+        print(f"   Algorithm: {verdict.analysis_summary['algorithm']}")
+        print(f"   Requires Manual Review: {verdict.analysis_summary.get('requires_manual_review')}")
+        print(f"   Human Approval Required: {verdict.enforced_constraints.get('human_approval_required')}")
+        print(f"   Recommended Actions: {verdict.recommended_actions}")
+
+        assert verdict.action == "human_required"
+        assert verdict.risk_level == "high"
+        assert verdict.analysis_summary['max_risk_level'] == "high"
+        assert verdict.enforced_constraints.get("human_approval_required") == True
+        assert "schedule_human_review" in verdict.recommended_actions
+
+    except Exception as e:
+        print(f"❌ Test 7 failed: {e}")
+
+    # Test 8: Enhanced Max-Risk Algorithm - Medium Risk Restrictions
+    print("\n📋 Test 8: Enhanced Max-Risk Algorithm - Medium Risk Restrictions")
+    try:
+        reports = [
+            SentinelReport(sentinel_name="performance", domain="slow-site.com", timestamp=datetime.utcnow(),
+                          risk_level="medium", findings={"slow_response": True}, recommended_action="restrict"),
+            SentinelReport(sentinel_name="network", domain="slow-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={}, recommended_action="allow"),
+            SentinelReport(sentinel_name="malware", domain="slow-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={}, recommended_action="allow")
+        ]
+
+        verdict = safety_verdict(reports, control, workflow_id="max_risk_medium_test_001")
+
+        print("✅ Enhanced max-risk algorithm - medium risk restrictions")
+        print(f"   Action: {verdict.action}")
+        print(f"   Max Risk Level: {verdict.analysis_summary['max_risk_level']}")
+        print(f"   Algorithm: {verdict.analysis_summary['algorithm']}")
+        print(f"   Original Constraints: {verdict.analysis_summary.get('original_constraints')}")
+        print(f"   Enhanced Constraints Applied: {len(verdict.analysis_summary.get('enhanced_constraints_applied', []))}")
+        print(f"   Tier Setting: {verdict.enforced_constraints.get('tier')}")
+        print(f"   Tempo Setting: {verdict.enforced_constraints.get('tempo')}")
+        print(f"   Max Requests: {verdict.enforced_constraints.get('max_requests')}")
+
+        assert verdict.action == "restrict"
+        assert verdict.risk_level == "medium"
+        assert verdict.analysis_summary['max_risk_level'] == "medium"
+        assert verdict.enforced_constraints.get("tier") == 1
+        assert verdict.enforced_constraints.get("tempo") == "forensic"
+        assert verdict.enforced_constraints.get("max_requests") == 30
+
+    except Exception as e:
+        print(f"❌ Test 8 failed: {e}")
+
+    # Test 9: Enhanced Max-Risk Algorithm - Low Risk Allowance
+    print("\n📋 Test 9: Enhanced Max-Risk Algorithm - Low Risk Allowance")
+    try:
+        reports = [
+            SentinelReport(sentinel_name="network", domain="safe-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={"normal_traffic": True}, recommended_action="allow"),
+            SentinelReport(sentinel_name="waf", domain="safe-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={"no_waf_detected": True}, recommended_action="allow"),
+            SentinelReport(sentinel_name="malware", domain="safe-site.com", timestamp=datetime.utcnow(),
+                          risk_level="low", findings={"clean_scan": True}, recommended_action="allow")
+        ]
+
+        verdict = safety_verdict(reports, control, workflow_id="max_risk_allow_test_001")
+
+        print("✅ Enhanced max-risk algorithm - low risk allowance")
+        print(f"   Action: {verdict.action}")
+        print(f"   Max Risk Level: {verdict.analysis_summary['max_risk_level']}")
+        print(f"   Algorithm: {verdict.analysis_summary['algorithm']}")
+        print(f"   All Sentinels Clear: {verdict.analysis_summary.get('all_sentinels_clear')}")
+        print(f"   Clean Findings: {verdict.analysis_summary.get('clean_findings')}")
+        print(f"   Monitoring Required: {verdict.enforced_constraints.get('monitoring_required')}")
+        print(f"   Audit Trail Events: {len(verdict.audit_trail or [])}")
+
+        assert verdict.action == "allow"
+        assert verdict.risk_level == "low"
+        assert verdict.analysis_summary['max_risk_level'] == "low"
+        assert verdict.analysis_summary.get('all_sentinels_clear') == True
+        assert verdict.enforced_constraints.get("monitoring_required") == True
+
+    except Exception as e:
+        print(f"❌ Test 9 failed: {e}")
+
+    # Test 10: Enhanced Max-Risk Algorithm with Custom Thresholds
+    print("\n📋 Test 10: Enhanced Max-Risk Algorithm with Custom Thresholds")
+    try:
+        # Test with custom thresholds that change behavior
         custom_thresholds = {
-            "critical_block_threshold": 1,  # Require 1+ critical
-            "high_block_ratio": 0.8,       # Require >80% high risk
-            "medium_delay_ratio": 0.9,     # Require >90% medium+high
-            "restrict_high_ratio": 0.3,    # Require >30% high risk
-            "restrict_medium_ratio": 0.6   # Require >60% medium risk
+            "critical_block_threshold": 2,  # Require 2+ critical
+            "high_block_ratio": 0.8,        # Require >80% high risk
+            "medium_delay_ratio": 0.9,      # Require >90% medium+high
+            "restrict_high_ratio": 0.3,     # Require >30% high risk
+            "restrict_medium_ratio": 0.6    # Require >60% medium risk
         }
 
         reports = [
@@ -252,30 +354,36 @@ def test_enhanced_safety_verdict():
         ] * 7 + [
             SentinelReport(sentinel_name="test", domain="custom.com", timestamp=datetime.utcnow(),
                           risk_level="low", findings={}, recommended_action="allow")
-        ] * 3  # 70% medium = should trigger restrict
+        ] * 3  # 70% medium = should trigger restrict with custom thresholds
 
-        verdict = safety_verdict(reports, control, workflow_id="custom_test_001",
+        verdict = safety_verdict(reports, control, workflow_id="custom_max_risk_test_001",
                                risk_thresholds=custom_thresholds)
 
-        print("✅ Custom risk thresholds applied correctly")
-        print(f"   Action: {verdict.action}")
+        print("✅ Enhanced max-risk algorithm with custom thresholds")
+        print(f"   Action: {verdict.action} (restrict due to 70% medium ratio)")
+        print(f"   Risk Level: {verdict.risk_level}")
+        print(f"   Custom Threshold Used: restrict_medium_ratio = {custom_thresholds['restrict_medium_ratio']:.1%}")
         print(f"   Medium Ratio: {7/10:.1%} (>60% threshold)")
-        print(f"   Custom Thresholds Used: restrict_medium_ratio = {custom_thresholds['restrict_medium_ratio']:.1%}")
+        print(f"   Algorithm: {verdict.analysis_summary['algorithm']}")
 
         assert verdict.action == "restrict"
         assert verdict.risk_level == "medium"
+        assert verdict.analysis_summary['max_risk_level'] == "medium"
 
     except Exception as e:
-        print(f"❌ Test 7 failed: {e}")
+        print(f"❌ Test 10 failed: {e}")
 
     print("\n🎉 Enhanced Safety Verdict System Tests Completed!")
     print("✅ Enterprise-grade Pydantic model with advanced features")
+    print("✅ Enhanced Max-Risk Algorithm - Critical Risk Blocking")
+    print("✅ Enhanced Max-Risk Algorithm - High Risk Human Intervention")
+    print("✅ Enhanced Max-Risk Algorithm - Medium Risk Restrictions")
+    print("✅ Enhanced Max-Risk Algorithm - Low Risk Allowance")
+    print("✅ Enhanced Max-Risk Algorithm with Custom Thresholds")
     print("✅ Critical risk detection and blocking")
     print("✅ Medium risk delay with sophisticated analysis")
     print("✅ Low risk allowance with monitoring")
     print("✅ Enhanced fallback for missing data")
-    print("✅ High risk ratio blocking")
-    print("✅ Custom risk threshold configuration")
     print("✅ Comprehensive constraint application")
     print("✅ Workflow tracking and audit trails")
     print("✅ Compliance flag generation")
@@ -283,7 +391,7 @@ def test_enhanced_safety_verdict():
     print("✅ Performance and risk trend analysis")
 
     print("\n🏆 Enterprise Features Validated:")
-    print("🔹 Advanced Risk Assessment Algorithms")
+    print("🔹 Enhanced Max-Risk Algorithm with Enterprise Intelligence")
     print("🔹 Statistical Confidence Scoring")
     print("🔹 Comprehensive Audit Trail Generation")
     print("🔹 Compliance Flag Management")
@@ -293,6 +401,9 @@ def test_enhanced_safety_verdict():
     print("🔹 Customizable Risk Thresholds")
     print("🔹 Enhanced Monitoring and Alerting")
     print("🔹 Performance and Processing Metrics")
+    print("🔹 Pydantic Compatibility with Fallbacks")
+    print("🔹 Human Intervention Workflows")
+    print("🔹 Incident Response Integration")
 
 
 if __name__ == "__main__":

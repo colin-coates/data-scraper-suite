@@ -146,10 +146,32 @@ def safety_verdict(
     risk_thresholds: Optional[Dict[str, float]] = None
 ) -> SafetyVerdict:
     """
-    Generate comprehensive safety verdict from sentinel reports and control contract.
+    Enhanced safety verdict generation with enterprise-grade intelligence.
 
-    Enhanced enterprise-grade verdict generation with workflow tracking,
-    compliance monitoring, audit trails, and operational intelligence.
+    Transforms the simple max-risk algorithm into a comprehensive decision engine
+    with statistical analysis, workflow tracking, compliance management, and operational intelligence.
+
+    Original algorithm enhanced with:
+    - Statistical confidence scoring
+    - Risk trend analysis and pattern detection
+    - Workflow correlation and audit trails
+    - Compliance flag generation
+    - Processing duration tracking
+    - Enhanced constraint application
+    - Recommended actions and operational intelligence
+    - Fallback handling for edge cases
+    - Enterprise monitoring and telemetry integration
+    """
+    """
+    Enhanced safety verdict generation with enterprise-grade intelligence.
+
+    Original max-risk algorithm enhanced with comprehensive enterprise features:
+    - Statistical confidence scoring and risk analysis
+    - Workflow tracking and correlation
+    - Compliance management and audit trails
+    - Operational intelligence and recommendations
+    - Enhanced constraint application
+    - Performance monitoring and telemetry
 
     Args:
         reports: List of sentinel reports
@@ -172,8 +194,8 @@ def safety_verdict(
         "restrict_medium_ratio": 0.5    # >50% medium = restrict
     }
 
+    # Enhanced fallback for missing sentinel data
     if not reports:
-        # Enhanced fallback for missing sentinel data
         audit_entry = {
             "event": "no_sentinel_reports",
             "timestamp": start_time.isoformat(),
@@ -190,6 +212,7 @@ def safety_verdict(
             analysis_summary={
                 "reports_count": 0,
                 "fallback_mode": True,
+                "algorithm": "max_risk_fallback",
                 "recommendations": ["Enable sentinel monitoring", "Log all activities"]
             },
             workflow_id=workflow_id,
@@ -200,7 +223,7 @@ def safety_verdict(
             recommended_actions=["enable_sentinel_monitoring", "increase_logging", "schedule_review"]
         )
 
-    # Comprehensive report analysis with enterprise enhancements
+    # COMPREHENSIVE REPORT ANALYSIS WITH ENTERPRISE ENHANCEMENTS
     risk_counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
     action_counts = {"allow": 0, "delay": 0, "restrict": 0, "block": 0, "human_required": 0}
 
@@ -219,20 +242,21 @@ def safety_verdict(
         if report.findings:
             findings.extend(report.findings.get("issues", []))
 
-    # Advanced risk calculations
-    total_reports = len(reports)
-    critical_ratio = risk_counts.get("critical", 0) / total_reports
-    high_ratio = risk_counts.get("high", 0) / total_reports
-    medium_ratio = risk_counts.get("medium", 0) / total_reports
-    low_ratio = risk_counts.get("low", 0) / total_reports
+    # PRESERVE ORIGINAL MAX-RISK ALGORITHM BUT ENHANCE WITH ENTERPRISE INTELLIGENCE
+    max_risk = max((r.risk_level for r in reports), default="low")
 
-    # Risk trend analysis
+    # Advanced risk calculations for enhanced decision making
+    total_reports = len(reports)
+    risk_ratios = {level: count/total_reports for level, count in risk_counts.items()}
+
+    # Risk trend analysis with max-risk focus
     risk_trends = {
-        "dominant_risk": max(risk_counts, key=risk_counts.get),
-        "risk_distribution": {k: v/total_reports for k, v in risk_counts.items()},
-        "action_consensus": max(action_counts, key=action_counts.get),
+        "dominant_risk": max_risk,
+        "max_risk_level": max_risk,
+        "risk_distribution": risk_ratios,
         "sentinel_coverage": list(sentinel_types),
-        "domains_analyzed": list(domains_analyzed)
+        "domains_analyzed": list(domains_analyzed),
+        "algorithm_used": "enhanced_max_risk"
     }
 
     # Compliance flag generation
@@ -246,42 +270,47 @@ def safety_verdict(
 
     # Audit trail generation
     audit_trail = [{
-        "event": "verdict_analysis_started",
+        "event": "max_risk_verdict_started",
         "timestamp": start_time.isoformat(),
+        "max_risk_detected": max_risk,
         "reports_count": total_reports,
         "sentinel_types": list(sentinel_types),
-        "domains_analyzed": list(domains_analyzed),
         "workflow_id": workflow_id
     }]
 
-    # Enhanced decision logic with enterprise intelligence
+    processing_duration = (datetime.utcnow() - start_time).total_seconds()
 
-    # Critical risk detection - always block
-    if risk_counts.get("critical", 0) >= thresholds["critical_block_threshold"]:
-        processing_duration = (datetime.utcnow() - start_time).total_seconds()
+    # ENHANCED MAX-RISK DECISION LOGIC WITH ENTERPRISE FEATURES
 
+    if max_risk == "critical":
+        # Enhanced critical risk response
         audit_trail.append({
-            "event": "critical_risk_detected",
+            "event": "critical_risk_max_detected",
             "timestamp": datetime.utcnow().isoformat(),
-            "critical_reports": risk_counts["critical"],
+            "max_risk": max_risk,
+            "critical_count": risk_counts["critical"],
             "action": "block"
         })
 
         return SafetyVerdict(
             action="block",
-            reason=f"Critical security risk detected: {risk_counts['critical']} critical reports from {len(sentinel_types)} sentinels",
+            reason="Critical risk detected - maximum risk level requires immediate blocking",
             enforced_constraints={
-                "block_reason": "critical_security_risk",
+                "block_reason": "critical_max_risk",
                 "immediate_shutdown": True,
-                "incident_report_required": True
+                "incident_report_required": True,
+                "human_review_required": True
             },
             risk_level="critical",
-            confidence_score=min(1.0, critical_ratio * 2.0),  # Boost confidence for critical
+            confidence_score=min(1.0, risk_counts["critical"] / total_reports * 2.0),  # Boost confidence
             analysis_summary={
                 "reports_count": total_reports,
+                "max_risk_algorithm": True,
+                "max_risk_level": max_risk,
                 "risk_breakdown": risk_counts,
                 "critical_findings": [f for f in findings if any(word in str(f).lower() for word in ["critical", "severe", "malware", "breach"])],
                 "sentinel_coverage": list(sentinel_types),
+                "algorithm": "max_risk_critical",
                 "risk_trends": risk_trends
             },
             workflow_id=workflow_id,
@@ -292,43 +321,43 @@ def safety_verdict(
             recommended_actions=[
                 "immediate_operation_shutdown",
                 "security_incident_response",
-                "human_review_required",
-                "system_quarantine"
+                "executive_notification",
+                "forensic_analysis_required"
             ],
             risk_trends=risk_trends
         )
 
-    # High concentration of high-risk reports
-    if high_ratio > thresholds["high_block_ratio"]:
-        processing_duration = (datetime.utcnow() - start_time).total_seconds()
-
+    if max_risk == "high":
+        # Enhanced high risk response with human intervention
         audit_trail.append({
-            "event": "high_risk_threshold_exceeded",
+            "event": "high_risk_max_detected",
             "timestamp": datetime.utcnow().isoformat(),
-            "high_ratio": high_ratio,
-            "threshold": thresholds["high_block_ratio"],
-            "action": "block"
+            "max_risk": max_risk,
+            "high_count": risk_counts["high"],
+            "action": "human_required"
         })
 
         return SafetyVerdict(
-            action="block",
-            reason=f"High security risk concentration: {high_ratio:.1%} of reports indicate high risk (threshold: {thresholds['high_block_ratio']:.1%})",
+            action="human_required",
+            reason="High risk detected - maximum risk level requires manual approval before proceeding",
             enforced_constraints={
-                "block_reason": "high_security_risk_concentration",
-                "review_required": True,
-                "escalation_required": True
+                "human_approval_required": True,
+                "operation_paused": True,
+                "enhanced_monitoring": True,
+                "audit_logging": True,
+                "risk_assessment_required": True
             },
             risk_level="high",
-            confidence_score=high_ratio,
+            confidence_score=risk_counts["high"] / total_reports,
             analysis_summary={
                 "reports_count": total_reports,
+                "max_risk_algorithm": True,
+                "max_risk_level": max_risk,
                 "risk_breakdown": risk_counts,
                 "high_risk_findings": findings[:10],  # Top 10 findings
                 "sentinel_coverage": list(sentinel_types),
-                "threshold_exceeded": {
-                    "actual": high_ratio,
-                    "threshold": thresholds["high_block_ratio"]
-                },
+                "algorithm": "max_risk_high_human_required",
+                "requires_manual_review": True,
                 "risk_trends": risk_trends
             },
             workflow_id=workflow_id,
@@ -337,99 +366,56 @@ def safety_verdict(
             compliance_flags=compliance_flags,
             audit_trail=audit_trail,
             recommended_actions=[
-                "security_review_required",
-                "risk_assessment_update",
-                "operational_escalation"
+                "schedule_human_review",
+                "prepare_risk_assessment",
+                "implement_additional_controls",
+                "consider_alternative_approach"
             ],
             risk_trends=risk_trends
         )
 
-    # Significant medium/high risk combination - delay operation
-    combined_risk_ratio = high_ratio + medium_ratio
-    if combined_risk_ratio > thresholds["medium_delay_ratio"]:
-        delay_minutes = min(120, max(5, int(combined_risk_ratio * 40)))  # More sophisticated delay calculation
-        processing_duration = (datetime.utcnow() - start_time).total_seconds()
-
+    if max_risk == "medium":
+        # Enhanced medium risk response with restrictions
         audit_trail.append({
-            "event": "moderate_risk_delay_triggered",
+            "event": "medium_risk_max_detected",
             "timestamp": datetime.utcnow().isoformat(),
-            "combined_risk_ratio": combined_risk_ratio,
-            "delay_minutes": delay_minutes,
-            "action": "delay"
-        })
-
-        return SafetyVerdict(
-            action="delay",
-            reason=f"Moderate security concerns detected: {combined_risk_ratio:.1%} medium/high risk ratio, delaying {delay_minutes} minutes",
-            enforced_constraints={
-                "delay_minutes": delay_minutes,
-                "delay_reason": "moderate_security_concerns",
-                "monitoring_required": True,
-                "progress_tracking": True
-            },
-            risk_level="medium",
-            confidence_score=combined_risk_ratio,
-            analysis_summary={
-                "reports_count": total_reports,
-                "risk_breakdown": risk_counts,
-                "delay_factors": findings[:7],  # Top 7 findings
-                "sentinel_coverage": list(sentinel_types),
-                "risk_calculation": {
-                    "high_ratio": high_ratio,
-                    "medium_ratio": medium_ratio,
-                    "combined_ratio": combined_risk_ratio,
-                    "threshold": thresholds["medium_delay_ratio"]
-                },
-                "risk_trends": risk_trends
-            },
-            workflow_id=workflow_id,
-            sentinel_reports_count=total_reports,
-            processing_duration=processing_duration,
-            compliance_flags=compliance_flags,
-            audit_trail=audit_trail,
-            recommended_actions=[
-                "scheduled_retry_after_delay",
-                "enhanced_monitoring",
-                "risk_reassessment"
-            ],
-            risk_trends=risk_trends
-        )
-
-    # Some security concerns - apply restrictions
-    if (high_ratio > thresholds["restrict_high_ratio"] or
-        medium_ratio > thresholds["restrict_medium_ratio"]):
-
-        processing_duration = (datetime.utcnow() - start_time).total_seconds()
-
-        audit_trail.append({
-            "event": "restriction_triggered",
-            "timestamp": datetime.utcnow().isoformat(),
-            "high_ratio": high_ratio,
-            "medium_ratio": medium_ratio,
+            "max_risk": max_risk,
+            "medium_count": risk_counts["medium"],
             "action": "restrict"
         })
 
+        # Enhanced constraints based on original algorithm
+        enhanced_constraints = {
+            "tier": 1,
+            "tempo": "forensic",
+            "max_requests": 30,
+            "restrict_reason": "medium_max_risk",
+            "reduced_rate_limit": True,
+            "extended_delays": True,
+            "enhanced_logging": True,
+            "progress_monitoring": True
+        }
+
         return SafetyVerdict(
             action="restrict",
-            reason=f"Security concerns detected: applying operational restrictions (high: {high_ratio:.1%}, medium: {medium_ratio:.1%})",
-            enforced_constraints={
-                "restrict_reason": "security_concerns_detected",
-                "reduced_rate_limit": True,
-                "extended_delays": True,
-                "enhanced_logging": True,
-                "progress_monitoring": True
-            },
+            reason="Medium risk detected - maximum risk level forcing safe mode with enhanced restrictions",
+            enforced_constraints=enhanced_constraints,
             risk_level="medium",
-            confidence_score=max(high_ratio, medium_ratio),
+            confidence_score=risk_counts["medium"] / total_reports,
             analysis_summary={
                 "reports_count": total_reports,
+                "max_risk_algorithm": True,
+                "max_risk_level": max_risk,
                 "risk_breakdown": risk_counts,
                 "restriction_factors": findings[:5],  # Top 5 findings
                 "sentinel_coverage": list(sentinel_types),
-                "restriction_triggers": {
-                    "high_ratio_triggered": high_ratio > thresholds["restrict_high_ratio"],
-                    "medium_ratio_triggered": medium_ratio > thresholds["restrict_medium_ratio"]
+                "algorithm": "max_risk_medium_restrict",
+                "original_constraints": {
+                    "tier": 1,
+                    "tempo": "forensic",
+                    "max_requests": 30
                 },
+                "enhanced_constraints_applied": list(enhanced_constraints.keys()),
                 "risk_trends": risk_trends
             },
             workflow_id=workflow_id,
@@ -438,38 +424,43 @@ def safety_verdict(
             compliance_flags=compliance_flags,
             audit_trail=audit_trail,
             recommended_actions=[
-                "reduced_operational_pace",
-                "enhanced_monitoring",
-                "periodic_risk_reassessment"
+                "implement_safe_mode_operations",
+                "increase_monitoring_frequency",
+                "prepare_contingency_plans",
+                "schedule_risk_reassessment"
             ],
             risk_trends=risk_trends
         )
 
-    # Low risk - allow operation with monitoring
-    processing_duration = (datetime.utcnow() - start_time).total_seconds()
-
+    # Low risk or no significant risk - allow with monitoring
     audit_trail.append({
-        "event": "low_risk_allowance",
+        "event": "low_risk_max_allowance",
         "timestamp": datetime.utcnow().isoformat(),
-        "low_ratio": low_ratio,
+        "max_risk": max_risk,
+        "low_count": risk_counts.get("low", 0),
         "action": "allow"
     })
 
     return SafetyVerdict(
         action="allow",
-        reason=f"Low security risk confirmed: {low_ratio:.1%} low-risk reports, proceeding with monitoring",
+        reason="All sentinels clear - maximum risk level is acceptable, proceeding with monitoring",
         enforced_constraints={
             "monitoring_required": True,
             "audit_required": True,
-            "performance_tracking": True
+            "performance_tracking": True,
+            "allow_reason": "max_risk_acceptable"
         },
         risk_level="low",
-        confidence_score=low_ratio,
+        confidence_score=risk_counts.get("low", 0) / total_reports if total_reports > 0 else 0.0,
         analysis_summary={
             "reports_count": total_reports,
+            "max_risk_algorithm": True,
+            "max_risk_level": max_risk,
             "risk_breakdown": risk_counts,
-            "clean_findings": len([f for f in findings if any(word in str(f).lower() for word in ["clean", "safe", "normal"])]),
+            "clean_findings": len([f for f in findings if any(word in str(f).lower() for word in ["clean", "safe", "normal", "clear"])]),
             "sentinel_coverage": list(sentinel_types),
+            "algorithm": "max_risk_allow",
+            "all_sentinels_clear": True,
             "risk_trends": risk_trends
         },
         workflow_id=workflow_id,
@@ -480,7 +471,8 @@ def safety_verdict(
         recommended_actions=[
             "continue_normal_operations",
             "maintain_monitoring",
-            "periodic_risk_review"
+            "periodic_risk_review",
+            "log_successful_clearance"
         ],
         risk_trends=risk_trends
     )
