@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from .retry_utils import retry_async, RetryConfig, retry_on_network_errors, retry_on_rate_limits
+from .control_models import ScrapeControlContract
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +59,23 @@ class ScraperConfig:
 class BaseScraper(ABC):
     """Base class for all scrapers with common functionality."""
 
-    def __init__(self, config: ScraperConfig):
+    # Class attributes for scraper classification
+    ROLE = None  # discovery / verification / enrichment / browser
+    TIER = None  # 1, 2, 3 (complexity/compliance level)
+
+    def __init__(self, config: ScraperConfig, control: Optional[ScrapeControlContract] = None):
         self.config = config
+        self.control = control
         self.logger = logging.getLogger(f"{__name__}.{config.name}")
         self._session_cookies = {}
         self._rate_limit_until = 0.0
         self._error_count = 0
         self._success_count = 0
+
+        # Governance metrics
+        self.pages = 0
+        self.records = 0
+        self.start_time = time.time()
 
         # Callbacks
         self.on_error: Optional[Callable[[Exception, Dict[str, Any]], None]] = None
@@ -110,6 +121,10 @@ class BaseScraper(ABC):
 
             if result.success:
                 self._success_count += 1
+                # Update governance metrics
+                self.pages += 1
+                if result.data:
+                    self.records += len(result.data) if isinstance(result.data, (list, dict)) else 1
                 if self.on_success:
                     self.on_success(result)
             else:
@@ -258,15 +273,32 @@ class BaseScraper(ABC):
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get scraper performance metrics."""
+        total_requests = self._success_count + self._error_count
+        runtime = time.time() - self.start_time
+
         return {
+            # Basic metrics
             'scraper_name': self.config.name,
             'success_count': self._success_count,
             'error_count': self._error_count,
-            'total_requests': self._success_count + self._error_count,
-            'success_rate': self._success_count / max(1, self._success_count + self._error_count),
+            'total_requests': total_requests,
+            'success_rate': self._success_count / max(1, total_requests),
+
+            # Governance metrics
+            'pages_scraped': self.pages,
+            'records_collected': self.records,
+            'runtime_seconds': runtime,
+            'pages_per_second': self.pages / max(1, runtime),
+            'records_per_second': self.records / max(1, runtime),
+
+            # Configuration
             'rate_limit_delay': self.config.rate_limit_delay,
             'max_retries': self.config.max_retries,
-            'timeout': self.config.timeout
+            'timeout': self.config.timeout,
+
+            # Classification
+            'role': self.ROLE,
+            'tier': self.TIER
         }
 
     def reset_metrics(self) -> None:
@@ -280,6 +312,21 @@ class BaseScraper(ABC):
         self.anti_detection = anti_detection_layer
         self.logger.info("Anti-detection layer configured")
 
+    def enforce(self) -> None:
+        """
+        Enforce governance controls before scraping operations.
+
+        Validates time windows, budget constraints, and scope limitations.
+        Should be called before starting scraping operations.
+        """
+        if not self.control:
+            self.logger.warning("No control contract provided - skipping governance enforcement")
+            return
+
+        enforce_time(self.control)
+        enforce_budget(self.control)
+        enforce_scope(self.control)
+
     async def cleanup(self) -> None:
         """Cleanup scraper resources."""
         self.logger.info(f"Cleaning up scraper {self.config.name}")
@@ -287,4 +334,80 @@ class BaseScraper(ABC):
         self._rate_limit_until = 0.0
 
     def __str__(self) -> str:
-        return f"{self.__class__.__name__}(name={self.config.name}, success_rate={self.get_metrics()['success_rate']:.2f})"
+        role_info = f", role={self.ROLE}" if self.ROLE else ""
+        tier_info = f", tier={self.TIER}" if self.TIER else ""
+        return f"{self.__class__.__name__}(name={self.config.name}, success_rate={self.get_metrics()['success_rate']:.2f}{role_info}{tier_info})"
+
+
+# Governance enforcement functions
+def enforce_time(control: ScrapeControlContract) -> None:
+    """
+    Enforce time-based governance controls.
+
+    Args:
+        control: Control contract with deployment window
+
+    Raises:
+        RuntimeError: If current time is outside deployment window
+    """
+    from datetime import datetime
+    now = datetime.utcnow()
+
+    if now < control.deployment_window.earliest_start:
+        wait_seconds = (control.deployment_window.earliest_start - now).total_seconds()
+        raise RuntimeError(f"Deployment window not open yet. Wait {wait_seconds:.0f} seconds.")
+
+    if now > control.deployment_window.latest_start:
+        raise RuntimeError("Deployment window has closed.")
+
+
+def enforce_budget(control: ScrapeControlContract) -> None:
+    """
+    Enforce budget-based governance controls.
+
+    Args:
+        control: Control contract with budget limits
+
+    Raises:
+        RuntimeError: If budget constraints are violated
+    """
+    budget = control.budget
+
+    # Check runtime budget (would need current runtime tracking)
+    # This is a placeholder - actual implementation would track runtime
+
+    # Check page budget
+    if hasattr(budget, 'max_pages') and budget.max_pages <= 0:
+        raise RuntimeError("Page budget exhausted")
+
+    # Check record budget
+    if budget.max_records <= 0:
+        raise RuntimeError("Record budget exhausted")
+
+    # Check browser instance budget
+    if hasattr(budget, 'max_browser_instances') and budget.max_browser_instances <= 0:
+        raise RuntimeError("Browser instance budget exhausted")
+
+
+def enforce_scope(control: ScrapeControlContract) -> None:
+    """
+    Enforce scope-based governance controls.
+
+    Args:
+        control: Control contract with intent specifications
+
+    Raises:
+        RuntimeError: If scope constraints are violated
+    """
+    intent = control.intent
+
+    # Validate geography scope
+    if not intent.geography:
+        raise RuntimeError("No geography scope defined")
+
+    # Validate data sources
+    if not intent.sources:
+        raise RuntimeError("No data sources specified")
+
+    # Additional scope validations could be added here
+    # (e.g., industry restrictions, data type limitations, etc.)
