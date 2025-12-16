@@ -19,6 +19,7 @@ from .control_models import ScrapeControlContract, ScrapeTempo
 from .deployment_timer import DeploymentTimer
 from .cost_governor import CostGovernor
 from .authorization import AuthorizationGate
+from .scrape_telemetry import emit_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +308,20 @@ async def finalize_scraper_execution(control: ScrapeControlContract, cost_govern
         },
         "recommendations": cost_governor.get_optimization_recommendations()
     }
+
+    # Emit telemetry data
+    blocked_reason = ""
+    if "Governance violation" in (result.get("errors", [""])[0] if result.get("errors") else ""):
+        blocked_reason = result["errors"][0]
+
+    await emit_telemetry(
+        scraper=control.intent.sources[0] if control.intent.sources else "unknown",
+        role=getattr(control.intent, 'allowed_role', 'unknown'),
+        cost_estimate=result.get("cost_incurred", 0),
+        records_found=result.get("records_found", 0),
+        blocked_reason=blocked_reason,
+        runtime=result.get("execution_time_seconds", result.get("response_time", 0))
+    )
 
     logger.info(
         f"Scraper execution finalized: {result['records_found']} records, "

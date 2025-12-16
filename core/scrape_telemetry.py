@@ -34,6 +34,9 @@ class ScrapeTelemetry:
     records_found: int
     blocked: bool = False
     latency_ms: int = 0
+    scraper_name: str = ""  # Name of the scraper instance
+    role: str = ""          # Scraper role (discovery/verification/enrichment/browser)
+    blocked_reason: str = "" # Reason for blocking if applicable
 
     def __post_init__(self):
         """Validate telemetry data."""
@@ -73,7 +76,10 @@ class ScrapeTelemetry:
             "cost": self.cost,
             "records_found": self.records_found,
             "blocked": self.blocked,
-            "latency_ms": self.latency_ms
+            "latency_ms": self.latency_ms,
+            "scraper_name": self.scraper_name,
+            "role": self.role,
+            "blocked_reason": self.blocked_reason
         }
 
 
@@ -339,3 +345,159 @@ async def record_scrape_telemetry(
 def get_telemetry_summary() -> Dict[str, Any]:
     """Get a summary of current telemetry data."""
     return _global_collector.get_current_metrics()
+
+
+async def record_telemetry(entry: ScrapeTelemetry) -> None:
+    """
+    Record telemetry entry to database/table.
+
+    This function persists the telemetry data to a persistent storage layer.
+    In a production implementation, this would write to a database, data warehouse,
+    or telemetry service.
+
+    Args:
+        entry: ScrapeTelemetry entry to persist
+    """
+    try:
+        # TODO: Implement actual database persistence
+        # This is a placeholder for database/table persistence logic
+
+        # For now, delegate to the global collector (in-memory storage)
+        await _global_collector.record_telemetry(entry)
+
+        # Example database persistence (uncomment and implement as needed):
+        # await persist_to_database(entry)
+        # await send_to_telemetry_service(entry)
+        # await write_to_data_warehouse(entry)
+
+        logger.info(f"Telemetry recorded: {entry.source} - {entry.records_found} records, ${entry.cost}")
+
+    except Exception as e:
+        logger.error(f"Failed to record telemetry: {e}")
+        # In production, you might want to:
+        # - Retry the operation
+        # - Write to a dead letter queue
+        # - Send alerts
+        raise
+
+
+def persist_to_database(entry: ScrapeTelemetry) -> None:
+    """
+    Placeholder for database persistence implementation.
+
+    Args:
+        entry: Telemetry entry to persist
+    """
+    # TODO: Implement actual database persistence
+    # Examples:
+    # - SQL database (PostgreSQL, MySQL)
+    # - NoSQL database (MongoDB, Cassandra)
+    # - Time-series database (InfluxDB, TimescaleDB)
+    # - Cloud database (BigQuery, Redshift)
+
+    logger.debug(f"Would persist to database: {entry.dict()}")
+
+
+def send_to_telemetry_service(entry: ScrapeTelemetry) -> None:
+    """
+    Placeholder for telemetry service integration.
+
+    Args:
+        entry: Telemetry entry to send
+    """
+    # TODO: Implement telemetry service integration
+    # Examples:
+    # - Application Insights
+    # - DataDog
+    # - New Relic
+    # - Custom telemetry service
+
+    logger.debug(f"Would send to telemetry service: {entry.dict()}")
+
+
+def write_to_data_warehouse(entry: ScrapeTelemetry) -> None:
+    """
+    Placeholder for data warehouse integration.
+
+    Args:
+        entry: Telemetry entry to write
+    """
+    # TODO: Implement data warehouse integration
+    # Examples:
+    # - Snowflake
+    # - Redshift
+    # - BigQuery
+    # - Custom data lake
+
+    logger.debug(f"Would write to data warehouse: {entry.dict()}")
+
+
+# Global telemetry collector instance
+_global_telemetry_collector = ScrapeTelemetryCollector()
+
+
+def get_global_telemetry_collector() -> ScrapeTelemetryCollector:
+    """Get the global telemetry collector instance."""
+    return _global_telemetry_collector
+
+
+async def emit_telemetry(
+    scraper: str,
+    role: str,
+    cost_estimate: float,
+    records_found: int,
+    blocked_reason: str = "",
+    runtime: float = 0.0
+) -> None:
+    """
+    Emit telemetry data for a scraping operation.
+
+    This function creates a ScrapeTelemetry entry and records it in the global
+    telemetry collector for analysis and monitoring.
+
+    Args:
+        scraper: Name of the scraper instance
+        role: Scraper role (discovery/verification/enrichment/browser)
+        cost_estimate: Estimated cost of the operation
+        records_found: Number of records collected
+        blocked_reason: Reason for blocking if applicable (empty if not blocked)
+        runtime: Execution time in seconds
+    """
+    # Determine if operation was blocked
+    blocked = bool(blocked_reason)
+
+    # Calculate latency in milliseconds
+    latency_ms = int(runtime * 1000)
+
+    # Get current timestamp and time information
+    now = datetime.utcnow()
+    hour_of_day = now.hour
+    day_of_week = now.strftime("%A")  # Monday, Tuesday, etc.
+
+    # Create telemetry entry
+    telemetry = ScrapeTelemetry(
+        timestamp=now,
+        source=scraper,
+        hour_of_day=hour_of_day,
+        day_of_week=day_of_week,
+        cost=cost_estimate,
+        records_found=records_found,
+        blocked=blocked,
+        latency_ms=latency_ms,
+        scraper_name=scraper,
+        role=role,
+        blocked_reason=blocked_reason
+    )
+
+    # Record in global collector
+    await _global_telemetry_collector.record_telemetry(telemetry)
+
+    # Optional: Send to external telemetry services
+    send_to_telemetry_service(telemetry)
+    write_to_data_warehouse(telemetry)
+
+    logger.info(
+        f"Emitted telemetry: {scraper} ({role}) - "
+        f"{records_found} records, ${cost_estimate:.2f}, "
+        f"{runtime:.2f}s" + (f" - BLOCKED: {blocked_reason}" if blocked else "")
+    )
