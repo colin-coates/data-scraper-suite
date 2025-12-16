@@ -28,6 +28,7 @@ from .base import (
 
 from .performance_sentinel import PerformanceSentinel, create_performance_sentinel
 from .network_sentinel import NetworkSentinel, create_network_sentinel
+from .waf_sentinel import WafSentinel, create_waf_sentinel
 
 __all__ = [
     'BaseSentinel',
@@ -39,8 +40,10 @@ __all__ = [
     'SentinelStatus',
     'PerformanceSentinel',
     'NetworkSentinel',
+    'WafSentinel',
     'create_performance_sentinel',
     'create_network_sentinel',
+    'create_waf_sentinel',
     'register_sentinel',
     'unregister_sentinel',
     'get_registered_sentinels',
