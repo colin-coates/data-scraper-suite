@@ -375,6 +375,10 @@ class BaseScraper(ABC):
         enforce_budget(self.control)
         enforce_scope(self.control)
 
+        # AI precheck validation (first line of defense)
+        if not ai_precheck(self.control):
+            raise AbortScrape("AI rejected scrape")
+
         # Role and capability validation
         if self.ROLE and self.control.intent.allowed_role and self.ROLE != self.control.intent.allowed_role:
             raise AbortScrape(f"Scraper role mismatch: {self.ROLE} != {self.control.intent.allowed_role}")
@@ -642,6 +646,130 @@ def abort(message: str) -> None:
     """
     logger.warning(f"Scraping operation aborted: {message}")
     raise AbortScrape(message)
+
+
+def ai_precheck(control: ScrapeControlContract) -> bool:
+    """
+    AI-powered precheck for scraping operations.
+
+    Evaluates scraping intent, risks, compliance, and operational factors
+    to determine if the operation should proceed.
+
+    Args:
+        control: Control contract containing scraping parameters and intent
+
+    Returns:
+        bool: True if operation should proceed, False if rejected
+    """
+    import random  # For simulation - replace with actual AI model
+    from datetime import datetime
+
+    intent = control.intent
+    budget = control.budget
+
+    # Risk assessment factors
+    risk_score = 0.0
+    risk_factors = []
+
+    # 1. Source type risk assessment
+    high_risk_sources = ["facebook", "instagram", "twitter"]
+    medium_risk_sources = ["company_websites", "news"]
+
+    for source in intent.sources:
+        if source in high_risk_sources:
+            risk_score += 0.8
+            risk_factors.append(f"high_risk_source_{source}")
+        elif source in medium_risk_sources:
+            risk_score += 0.4
+            risk_factors.append(f"medium_risk_source_{source}")
+
+    # 2. Geographic scope assessment
+    if not intent.geography:
+        risk_score += 1.0  # No geography = maximum risk
+        risk_factors.append("no_geography_specified")
+    elif len(intent.geography) > 5:
+        risk_score += 0.6  # Too broad geographic scope
+        risk_factors.append("overly_broad_geography")
+
+    # 3. Event type risk assessment
+    if intent.event_type:
+        sensitive_events = ["corporate", "professional"]
+        if intent.event_type in sensitive_events:
+            risk_score += 0.5
+            risk_factors.append(f"sensitive_event_type_{intent.event_type}")
+
+    # 4. Budget assessment
+    if budget.max_records > 10000:
+        risk_score += 0.3
+        risk_factors.append("large_record_volume")
+
+    if budget.max_runtime_minutes > 120:
+        risk_score += 0.4
+        risk_factors.append("extended_runtime")
+
+    # 5. Time-based risk assessment
+    now = datetime.utcnow()
+    current_hour = now.hour
+    current_day = now.weekday()
+
+    # Higher risk during business hours (potential blocking)
+    if 9 <= current_hour <= 17 and current_day < 5:  # Business hours, weekdays
+        risk_score += 0.2
+        risk_factors.append("business_hours_execution")
+
+    # 6. Authorization assessment
+    if not control.authorization:
+        risk_score += 2.0  # No authorization = critical rejection
+        risk_factors.append("no_authorization")
+    elif control.authorization.expires_at <= now:
+        risk_score += 2.0  # Expired authorization = critical rejection
+        risk_factors.append("expired_authorization")
+
+    # 7. Scraper tier assessment (from intent if specified)
+    if intent.allowed_role == "browser":
+        risk_score += 0.7  # Browser scraping is inherently riskier
+        risk_factors.append("browser_scraping_tier")
+
+    # AI Decision Logic
+    # For simulation: reject based on risk thresholds and critical factors
+    # In production: replace with actual ML model inference
+
+    # Critical rejection criteria (always reject)
+    if "no_authorization" in risk_factors or "expired_authorization" in risk_factors:
+        logger.warning(f"AI precheck rejected: Authorization issues, factors: {risk_factors}")
+        return False
+
+    if "no_geography_specified" in risk_factors:
+        logger.warning(f"AI precheck rejected: No geographic targeting, factors: {risk_factors}")
+        return False
+
+    # High-risk rejection criteria
+    if risk_score >= 2.0:  # Very high risk score
+        logger.warning(f"AI precheck rejected: Critical risk score {risk_score:.2f}, factors: {risk_factors}")
+        return False
+
+    # Probabilistic rejection for medium risk (simulate AI uncertainty)
+    if risk_score > 0.6:
+        rejection_probability = min(0.4, risk_score * 0.3)  # Up to 40% rejection for high medium risk
+        if random.random() < rejection_probability:
+            logger.warning(f"AI precheck rejected: Medium risk assessment {risk_score:.2f}, factors: {risk_factors}")
+            return False
+
+    # Accept if risk score is low enough
+    if risk_score <= 0.3:
+        logger.info(f"AI precheck approved: Low risk operation {risk_score:.2f}")
+        return True
+
+    # For medium risk, additional checks
+    # Check if human override is available for high-risk operations
+    if risk_score > 0.8 and control.human_override:
+        logger.info(f"AI precheck approved with human override: {risk_score:.2f}, factors: {risk_factors}")
+        return True
+
+    # Default: approve for now (conservative approach)
+    # In production, this would be more sophisticated
+    logger.info(f"AI precheck approved: Acceptable risk {risk_score:.2f}, factors: {risk_factors}")
+    return True
 
 
 # Governance enforcement functions
