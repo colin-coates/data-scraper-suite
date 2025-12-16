@@ -33,6 +33,7 @@ from .control_models import (
     ScraperControl, JobControl, SystemControl, QueueControl,
     ControlMetadata, ScrapeControlContract, ScrapeTempo
 )
+from .sentinels import SentinelOrchestrator, create_comprehensive_orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,13 @@ class EngineConfig:
     enforce_deployment_windows: bool = True
     validate_authorizations: bool = True
 
+    # Sentinel security settings
+    enable_sentinels: bool = True  # Enable sentinel-based security monitoring
+    run_pre_job_checks: bool = True  # Run sentinels before job submission
+    run_continuous_monitoring: bool = True  # Run sentinels during long-running jobs
+    run_post_job_analysis: bool = True  # Run sentinels on job results
+    sentinel_check_interval: float = 300.0  # Seconds between continuous checks
+
     # Output settings
     output_queue_name: str = "scraping-results"
     enable_result_publishing: bool = True
@@ -120,6 +128,9 @@ class CoreScraperEngine:
         # Governance and control
         self.anti_detection = AntiDetectionLayer() if self.config.enable_anti_detection else None
         self.system_control: Optional[SystemControl] = None
+
+        # Sentinel security monitoring
+        self.sentinel_orchestrator: Optional[SentinelOrchestrator] = None
 
         # Control and metrics
         self.running = False
@@ -163,6 +174,12 @@ class CoreScraperEngine:
             if self.anti_detection:
                 await self.anti_detection.initialize()
                 self.logger.info("Anti-detection layer initialized")
+
+            # Initialize sentinel orchestrator
+            if self.config.enable_sentinels:
+                self.sentinel_orchestrator = create_comprehensive_orchestrator()
+                await self.sentinel_orchestrator.initialize()
+                self.logger.info("Sentinel orchestrator initialized with comprehensive security monitoring")
 
             self.logger.info("CoreScraperEngine initialization complete")
 
@@ -246,6 +263,10 @@ class CoreScraperEngine:
         # Validate job against governance rules
         await self._validate_job_governance(job_control)
 
+        # Run pre-job sentinel security checks
+        if self.config.enable_sentinels and self.config.run_pre_job_checks:
+            await self._run_pre_job_sentinel_checks(job_control)
+
         # Generate job ID if not provided
         if not job_control.job_id:
             job_control.job_id = f"job_{int(time.time() * 1000)}_{hash(str(job_control.target)) % 10000}"
@@ -301,6 +322,279 @@ class CoreScraperEngine:
         scraper_control = self.scraper_controls.get(scraper_key)
         if scraper_control and not scraper_control.is_healthy():
             raise ValueError(f"Scraper not healthy: {scraper_key}")
+
+    async def _run_pre_job_sentinel_checks(self, job_control: JobControl) -> None:
+        """
+        Run sentinel security checks before job execution.
+        Validates target security, network conditions, and potential risks.
+        """
+        if not self.sentinel_orchestrator:
+            return
+
+        target_info = {
+            "urls": self._extract_urls_from_target(job_control.target),
+            "domains": self._extract_domains_from_target(job_control.target),
+            "scraper_type": job_control.scraper_type.value,
+            "job_priority": job_control.priority.value,
+            "has_contract": job_control.control_contract is not None
+        }
+
+        self.logger.info(f"Running pre-job sentinel checks for job targeting {target_info['domains']}")
+
+        try:
+            result = await self.sentinel_orchestrator.orchestrate(
+                target=target_info,
+                sentinels_to_run=["network", "waf", "malware"]  # Focus on pre-flight checks
+            )
+
+            # Check if sentinels recommend blocking the job
+            if result.aggregated_action == "block":
+                raise ValueError(
+                    f"Job blocked by sentinel security checks: {result.aggregated_risk_level} risk. "
+                    f"Findings: {result.aggregated_findings}"
+                )
+
+            # Log warnings for high-risk jobs
+            if result.aggregated_risk_level in ["high", "critical"]:
+                self.logger.warning(
+                    f"High-risk job approved with warnings: {result.aggregated_risk_level} risk. "
+                    f"Findings: {result.aggregated_findings}"
+                )
+
+            self.logger.info(f"Pre-job sentinel checks passed: {result.aggregated_risk_level} risk level")
+
+        except Exception as e:
+            self.logger.error(f"Pre-job sentinel checks failed: {e}")
+            raise ValueError(f"Sentinel security validation failed: {e}")
+
+    def _extract_urls_from_target(self, target: Dict[str, Any]) -> List[str]:
+        """Extract URLs from job target for sentinel analysis."""
+        urls = []
+
+        # Common URL fields in targets
+        url_fields = ["url", "urls", "target_url", "base_url", "endpoint"]
+
+        for field in url_fields:
+            if field in target:
+                value = target[field]
+                if isinstance(value, str):
+                    urls.append(value)
+                elif isinstance(value, list):
+                    urls.extend([u for u in value if isinstance(u, str)])
+
+        # Extract from nested structures
+        if "companies" in target:
+            for company in target["companies"]:
+                if "url" in company:
+                    urls.append(company["url"])
+
+        if "people" in target:
+            for person in target["people"]:
+                if "profile_url" in person:
+                    urls.append(person["profile_url"])
+
+        return urls
+
+    def _extract_domains_from_target(self, target: Dict[str, Any]) -> List[str]:
+        """Extract domains from job target for sentinel analysis."""
+        domains = set()
+
+        urls = self._extract_urls_from_target(target)
+        for url in urls:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                if parsed.netloc:
+                    domain = parsed.netloc.lower()
+                    # Remove www. prefix
+                    if domain.startswith("www."):
+                        domain = domain[4:]
+                    domains.add(domain)
+            except Exception:
+                continue
+
+        return list(domains)
+
+    async def _scrape_with_continuous_monitoring(self, scraper: BaseScraper, job_control: JobControl) -> ScraperResult:
+        """
+        Execute scraping with continuous sentinel monitoring for long-running jobs.
+        Monitors target security throughout the scraping process.
+        """
+        last_check_time = time.time()
+        monitoring_task = None
+
+        try:
+            # Start continuous monitoring task
+            monitoring_task = asyncio.create_task(
+                self._continuous_sentinel_monitor(job_control, scraper)
+            )
+
+            # Execute the scrape
+            result = await scraper.scrape(job_control.target)
+
+            # Cancel monitoring task
+            if monitoring_task and not monitoring_task.done():
+                monitoring_task.cancel()
+                try:
+                    await monitoring_task
+                except asyncio.CancelledError:
+                    pass
+
+            return result
+
+        except Exception as e:
+            # Cancel monitoring task on error
+            if monitoring_task and not monitoring_task.done():
+                monitoring_task.cancel()
+                try:
+                    await monitoring_task
+                except asyncio.CancelledError:
+                    pass
+            raise
+
+    async def _continuous_sentinel_monitor(self, job_control: JobControl, scraper: BaseScraper) -> None:
+        """
+        Continuously monitor job execution with sentinels.
+        Runs periodic security checks during long-running scraping operations.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self.config.sentinel_check_interval)
+
+                # Check if job is still active
+                if job_control.job_id not in self.active_jobs:
+                    break
+
+                target_info = {
+                    "urls": self._extract_urls_from_target(job_control.target),
+                    "domains": self._extract_domains_from_target(job_control.target),
+                    "scraper_type": job_control.scraper_type.value,
+                    "job_id": job_control.job_id,
+                    "runtime_seconds": (datetime.utcnow() - job_control.started_at).total_seconds() if job_control.started_at else 0
+                }
+
+                self.logger.debug(f"Running continuous sentinel check for job {job_control.job_id}")
+
+                result = await self.sentinel_orchestrator.orchestrate(
+                    target=target_info,
+                    sentinels_to_run=["performance", "network"]  # Focus on runtime monitoring
+                )
+
+                # Handle critical issues during execution
+                if result.aggregated_risk_level == "critical":
+                    self.logger.warning(
+                        f"Critical risk detected during job {job_control.job_id} execution: "
+                        f"{result.aggregated_findings}"
+                    )
+                    # Could implement job interruption logic here
+
+                # Log performance issues
+                elif result.aggregated_risk_level == "high":
+                    self.logger.info(
+                        f"Performance issues detected during job {job_control.job_id}: "
+                        f"{result.aggregated_findings}"
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Continuous monitoring error for job {job_control.job_id}: {e}")
+                await asyncio.sleep(30)  # Back off on errors
+
+    async def _run_post_job_sentinel_analysis(self, job_control: JobControl, result: ScraperResult) -> None:
+        """
+        Run sentinel analysis on job results to validate data quality and security.
+        Analyzes scraped data for potential security issues or quality concerns.
+        """
+        if not self.sentinel_orchestrator:
+            return
+
+        # Prepare analysis target with result data
+        target_info = {
+            "urls": self._extract_urls_from_target(job_control.target),
+            "domains": self._extract_domains_from_target(job_control.target),
+            "scraper_type": job_control.scraper_type.value,
+            "job_id": job_control.job_id,
+            "records_found": result.data.get("records_found", 0) if result.data else 0,
+            "data_quality_score": self._calculate_data_quality_score(result),
+            "processing_time": result.response_time,
+            "has_sensitive_data": self._detect_sensitive_data_patterns(result)
+        }
+
+        self.logger.info(f"Running post-job sentinel analysis for {job_control.job_id}")
+
+        try:
+            analysis_result = await self.sentinel_orchestrator.orchestrate(
+                target=target_info,
+                sentinels_to_run=["malware", "performance"]  # Focus on data analysis
+            )
+
+            # Log analysis results
+            if analysis_result.aggregated_risk_level in ["high", "critical"]:
+                self.logger.warning(
+                    f"Post-job analysis detected issues for {job_control.job_id}: "
+                    f"{analysis_result.aggregated_risk_level} risk - {analysis_result.aggregated_findings}"
+                )
+                # Could flag result for review or quarantine
+
+            # Store analysis results in job metadata
+            if not job_control.metadata:
+                job_control.metadata = ControlMetadata()
+            job_control.metadata.additional_data["sentinel_analysis"] = {
+                "risk_level": analysis_result.aggregated_risk_level,
+                "recommended_action": analysis_result.aggregated_action,
+                "findings": analysis_result.aggregated_findings,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+            self.logger.info(f"Post-job analysis completed for {job_control.job_id}: {analysis_result.aggregated_risk_level}")
+
+        except Exception as e:
+            self.logger.error(f"Post-job sentinel analysis failed for {job_control.job_id}: {e}")
+
+    def _calculate_data_quality_score(self, result: ScraperResult) -> float:
+        """Calculate a basic data quality score from scraping results."""
+        if not result.data:
+            return 0.0
+
+        score = 0.0
+        total_weight = 0.0
+
+        # Records found (higher is better, up to a point)
+        records = result.data.get("records_found", 0)
+        if records > 0:
+            score += min(records / 100.0, 1.0) * 0.4  # 40% weight
+            total_weight += 0.4
+
+        # Response time (faster is better)
+        response_time = result.response_time
+        if response_time > 0:
+            time_score = max(0, 1.0 - (response_time / 300.0))  # Expect < 5 minutes
+            score += time_score * 0.3  # 30% weight
+            total_weight += 0.3
+
+        # Error rate (lower is better)
+        errors = result.data.get("errors", 0)
+        if records > 0:
+            error_rate = errors / (records + errors)
+            error_score = max(0, 1.0 - error_rate)
+            score += error_score * 0.3  # 30% weight
+            total_weight += 0.3
+
+        return score / total_weight if total_weight > 0 else 0.0
+
+    def _detect_sensitive_data_patterns(self, result: ScraperResult) -> bool:
+        """Detect potential sensitive data patterns in scraping results."""
+        if not result.data:
+            return False
+
+        sensitive_patterns = [
+            "password", "ssn", "social_security", "credit_card",
+            "bank_account", "medical", "health", "confidential"
+        ]
+
+        data_str = str(result.data).lower()
+        return any(pattern in data_str for pattern in sensitive_patterns)
 
     async def _check_dependencies(self, job_control: JobControl) -> bool:
         """Check if all job dependencies are satisfied."""
@@ -404,8 +698,11 @@ class CoreScraperEngine:
                 tempo_settings = job_control.control_contract.get_tempo_settings()
                 # Apply tempo settings to scraper (would need scraper API for this)
 
-            # Execute scraping
-            result = await scraper.scrape(job_control.target)
+            # Execute scraping with continuous sentinel monitoring
+            if self.config.enable_sentinels and self.config.run_continuous_monitoring:
+                result = await self._scrape_with_continuous_monitoring(scraper, job_control)
+            else:
+                result = await scraper.scrape(job_control.target)
 
             # Update job
             job_control.result = result
@@ -429,6 +726,13 @@ class CoreScraperEngine:
 
             # Publish result
             await self._publish_result(job_control)
+
+            # Run post-job sentinel analysis on successful results
+            if result.success and self.config.enable_sentinels and self.config.run_post_job_analysis:
+                try:
+                    await self._run_post_job_sentinel_analysis(job_control, result)
+                except Exception as e:
+                    self.logger.error(f"Post-job sentinel analysis failed for {job_control.job_id}: {e}")
 
             # Auto-publish to queue if enabled
             if self.queue_publisher and result.success and self.config.enable_result_publishing:
@@ -630,6 +934,11 @@ class CoreScraperEngine:
             'anti_detection_enabled': self.anti_detection is not None,
             'result_publishing_enabled': self.config.enable_result_publishing,
             'governance_enabled': self.config.require_control_contracts,
+            'sentinels_enabled': self.config.enable_sentinels,
+            'pre_job_checks_enabled': self.config.run_pre_job_checks,
+            'continuous_monitoring_enabled': self.config.run_continuous_monitoring,
+            'post_job_analysis_enabled': self.config.run_post_job_analysis,
+            'sentinel_orchestrator_info': self.sentinel_orchestrator.get_orchestrator_info() if self.sentinel_orchestrator else None,
             'system_control': self.system_control.__dict__ if self.system_control else None
         }
 
@@ -667,6 +976,10 @@ class CoreScraperEngine:
         # Cleanup anti-detection
         if self.anti_detection:
             await self.anti_detection.cleanup()
+
+        # Cleanup sentinel orchestrator
+        if self.sentinel_orchestrator:
+            await self.sentinel_orchestrator.cleanup()
 
         # Close clients
         if self.service_bus_client:
