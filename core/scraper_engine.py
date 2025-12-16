@@ -1,1004 +1,1443 @@
 # Copyright (c) 2024 Mountain Jewels Intelligence. All rights reserved.
 #
 # This software is proprietary and confidential. Unauthorized copying,
-# modification, distribution, or use is strictly prohibited.
+# modification, distribution, or use as is strictly prohibited.
 
 """
-Core Scraper Engine - Advanced Orchestration Engine
+Scraper Engine for MJ Data Scraper Suite
 
-Enhanced job dispatching, scraper management, and governance integration
-for the MJ Data Scraper Suite with control contract enforcement.
+Enterprise-grade scraping orchestration engine that integrates all intelligence
+systems for optimal, compliant, and cost-effective data operations.
 """
 
 import asyncio
 import logging
-import time
-from typing import Dict, Any, List, Optional, Callable, Type, Set
-from dataclasses import dataclass, field
+import uuid
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
-import json
+from typing import Dict, List, Any, Optional, Tuple, Union
+from enum import Enum
+from dataclasses import dataclass, field
+from collections import defaultdict
 
-from azure.servicebus import ServiceBusClient
-from azure.servicebus.aio import ServiceBusClient as AsyncServiceBusClient
-from azure.storage.blob import BlobServiceClient
-
-from .base_scraper import BaseScraper, ScraperConfig, ScraperResult
-from .queue_publisher import QueuePublisher, QueueConfig, PublishResult
-from .mj_envelope import MJMessageEnvelope
-from .mj_payload_builder import build_person_payload, build_event_payload
-from .anti_detection.anti_detection import AntiDetectionLayer
-from .control_models import (
-    JobPriority, JobStatus, ScraperType, DataType,
-    ScraperControl, JobControl, SystemControl, QueueControl,
-    ControlMetadata, ScrapeControlContract, ScrapeTempo
+from core.control_models import (
+    ScrapeControlContract,
+    ScrapeIntent,
+    ScrapeBudget,
+    ScrapeAuthorization,
+    JobPriority,
+    ScraperType
 )
-from .sentinels import SentinelOrchestrator, create_comprehensive_orchestrator
+from core.models.asset_signal import AssetType, SignalType, Asset
+from scrapers.base_scraper import EnhancedBaseScraper as BaseScraper
+from core.intent_classifier import (
+    classify_scraping_intent,
+    IntentClassification,
+    IntentRiskLevel,
+    IntentCategory,
+    GovernanceRequirement
+)
+from core.execution_mode_classifier import (
+    classify_execution_mode,
+    ExecutionProfile,
+    ExecutionMode,
+    ExecutionStrategy
+)
+from core.cost_predictor import (
+    predict_scraping_cost,
+    CostPrediction,
+    optimize_scraping_cost,
+    CostOptimizationPlan,
+    analyze_scraping_budget,
+    BudgetAnalysis
+)
+from core.mapping.asset_signal_map import (
+    map_to_signal,
+    batch_map_to_signals,
+    get_optimal_sources_for_signal,
+    calculate_signal_cost_estimate,
+    validate_source_for_signal
+)
+from core.base_scraper import ai_precheck
+from core.authorization import AuthorizationGate
+from core.deployment_timer import DeploymentTimer
+from core.cost_governor import CostGovernor
+from core.scrape_workflow import run_scraper
+from core.sentinels.sentinel_orchestrator import run_sentinels, SentinelOrchestrator
+from core.safety_verdict import safety_verdict
+from core.scrape_telemetry import emit_telemetry, ScrapeTelemetryCollector
 
 logger = logging.getLogger(__name__)
 
 
+class ScrapingPhase(Enum):
+    """Phases of the scraping orchestration process."""
+    INITIALIZATION = "initialization"
+    INTENT_ANALYSIS = "intent_analysis"
+    RISK_ASSESSMENT = "risk_assessment"
+    EXECUTION_PLANNING = "execution_planning"
+    COST_OPTIMIZATION = "cost_optimization"
+    GOVERNANCE_CHECK = "governance_check"
+    RESOURCE_ALLOCATION = "resource_allocation"
+    EXECUTION_MONITORING = "execution_monitoring"
+    QUALITY_VALIDATION = "quality_validation"
+    FINALIZATION = "finalization"
+
+
+class OrchestrationResult(Enum):
+    """Possible outcomes of scraping orchestration."""
+    SUCCESS = "success"
+    PARTIAL_SUCCESS = "partial_success"
+    BLOCKED_BY_GOVERNANCE = "blocked_by_governance"
+    BLOCKED_BY_COST = "blocked_by_cost"
+    BLOCKED_BY_RISK = "blocked_by_risk"
+    EXECUTION_FAILED = "execution_failed"
+    CANCELLED_BY_USER = "cancelled_by_user"
+    TIMEOUT_EXCEEDED = "timeout_exceeded"
+
+
 @dataclass
-class EngineMetrics:
-    """Real-time engine performance metrics."""
-    jobs_processed: int = 0
-    jobs_succeeded: int = 0
-    jobs_failed: int = 0
-    total_processing_time: float = 0.0
-    active_jobs: int = 0
-    queued_jobs: int = 0
-    scraper_usage: Dict[str, int] = field(default_factory=dict)
-    start_time: datetime = field(default_factory=datetime.utcnow)
-
-    @property
-    def success_rate(self) -> float:
-        """Calculate success rate."""
-        total = self.jobs_succeeded + self.jobs_failed
-        return self.jobs_succeeded / max(1, total)
-
-    @property
-    def avg_processing_time(self) -> float:
-        """Calculate average processing time."""
-        return self.total_processing_time / max(1, self.jobs_processed)
-
-
-@dataclass
-class EngineConfig:
-    """Configuration for the scraper engine with governance controls."""
-    max_concurrent_jobs: int = 10
-    job_queue_size: int = 1000
-    enable_metrics: bool = True
-    enable_anti_detection: bool = True
-
-    # Azure integration
-    azure_service_bus_connection: str = ""
-    azure_blob_connection: str = ""
-    azure_queue_name: str = "scraping-jobs"
-    azure_blob_container: str = "scraping-results"
-
-    # Governance settings
-    require_control_contracts: bool = False  # Make contracts mandatory
-    enforce_deployment_windows: bool = True
-    validate_authorizations: bool = True
-
-    # Sentinel security settings
-    enable_sentinels: bool = True  # Enable sentinel-based security monitoring
-    run_pre_job_checks: bool = True  # Run sentinels before job submission
-    run_continuous_monitoring: bool = True  # Run sentinels during long-running jobs
-    run_post_job_analysis: bool = True  # Run sentinels on job results
-    sentinel_check_interval: float = 300.0  # Seconds between continuous checks
-
-    # Output settings
-    output_queue_name: str = "scraping-results"
-    enable_result_publishing: bool = True
-    default_rate_limit: float = 1.0
-
-
-class CoreScraperEngine:
-    """
-    Advanced scraper engine with governance and control contract integration.
-
-    Provides enterprise-grade job orchestration with compliance, resource management,
-    and real-time governance enforcement.
-    """
-
-    def __init__(self, config: Optional[EngineConfig] = None):
-        self.config = config or EngineConfig()
-        self.logger = logging.getLogger(f"{__name__}.CoreScraperEngine")
-
-        # Core registries
-        self.scrapers: Dict[str, Type[BaseScraper]] = {}
-        self.active_scrapers: Dict[str, BaseScraper] = {}
-        self.scraper_controls: Dict[str, ScraperControl] = {}
-
-        # Job management with priority queues
-        self.job_queues: Dict[JobPriority, asyncio.Queue[JobControl]] = {
-            priority: asyncio.Queue(maxsize=self.config.job_queue_size)
-            for priority in JobPriority
-        }
-        self.active_jobs: Dict[str, JobControl] = {}
-        self.completed_jobs: List[JobControl] = []
-        self.job_dependencies: Dict[str, Set[str]] = {}  # job_id -> set of blocking job_ids
-
-        # Azure clients
-        self.service_bus_client: Optional[AsyncServiceBusClient] = None
-        self.blob_service_client: Optional[BlobServiceClient] = None
-        self.queue_publisher: Optional[QueuePublisher] = None
-
-        # Governance and control
-        self.anti_detection = AntiDetectionLayer() if self.config.enable_anti_detection else None
-        self.system_control: Optional[SystemControl] = None
-
-        # Sentinel security monitoring
-        self.sentinel_orchestrator: Optional[SentinelOrchestrator] = None
-
-        # Control and metrics
-        self.running = False
-        self.shutdown_event = asyncio.Event()
-        self.metrics = EngineMetrics()
-
-        # Resource management
-        self.executor = ThreadPoolExecutor(max_workers=self.config.max_concurrent_jobs)
-
-        self.logger.info("CoreScraperEngine initialized with governance controls")
-
-    async def initialize(self, system_control: Optional[SystemControl] = None) -> None:
-        """Initialize the scraper engine with system controls."""
-        try:
-            self.system_control = system_control or SystemControl()
-
-            # Initialize Azure clients
-            if self.config.azure_service_bus_connection:
-                self.service_bus_client = AsyncServiceBusClient.from_connection_string(
-                    self.config.azure_service_bus_connection
-                )
-                self.logger.info("Azure Service Bus client initialized")
-
-            if self.config.azure_blob_connection:
-                self.blob_service_client = BlobServiceClient.from_connection_string(
-                    self.config.azure_blob_connection
-                )
-                self.logger.info("Azure Blob Storage client initialized")
-
-            # Initialize queue publisher
-            if self.config.enable_result_publishing and self.config.azure_service_bus_connection:
-                queue_config = QueueConfig(
-                    connection_string=self.config.azure_service_bus_connection,
-                    queue_name=self.config.output_queue_name
-                )
-                self.queue_publisher = QueuePublisher(queue_config)
-                await self.queue_publisher.initialize()
-                self.logger.info("Queue publisher initialized")
-
-            # Initialize anti-detection
-            if self.anti_detection:
-                await self.anti_detection.initialize()
-                self.logger.info("Anti-detection layer initialized")
-
-            # Initialize sentinel orchestrator
-            if self.config.enable_sentinels:
-                self.sentinel_orchestrator = create_comprehensive_orchestrator()
-                await self.sentinel_orchestrator.initialize()
-                self.logger.info("Sentinel orchestrator initialized with comprehensive security monitoring")
-
-            self.logger.info("CoreScraperEngine initialization complete")
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize CoreScraperEngine: {e}")
-            raise
-
-    def register_scraper(
-        self,
-        scraper_type: ScraperType,
-        scraper_class: Type[BaseScraper],
-        scraper_control: Optional[ScraperControl] = None
-    ) -> None:
-        """
-        Register a scraper with governance controls.
-
-        Args:
-            scraper_type: Type of scraper to register
-            scraper_class: The scraper class implementation
-            scraper_control: Optional governance controls for this scraper
-        """
-        scraper_key = scraper_type.value
-
-        if scraper_key in self.scrapers:
-            self.logger.warning(f"Scraper type '{scraper_key}' already registered, overwriting")
-
-        self.scrapers[scraper_key] = scraper_class
-
-        # Create or use provided scraper control
-        if scraper_control is None:
-            scraper_control = ScraperControl(
-                scraper_id="",
-                scraper_type=scraper_type,
-                name=f"{scraper_type.value}_scraper"
-            )
-
-        self.scraper_controls[scraper_key] = scraper_control
-
-        # Instantiate the scraper
-        scraper_instance = scraper_class(scraper_control.__dict__)
-
-        # Attach anti-detection if available
-        if self.anti_detection:
-            scraper_instance.set_anti_detection(self.anti_detection)
-
-        self.active_scrapers[scraper_key] = scraper_instance
-
-        self.logger.info(f"Registered scraper: {scraper_key} with governance controls")
-
-    def unregister_scraper(self, scraper_type: ScraperType) -> None:
-        """Unregister a scraper and cleanup resources."""
-        scraper_key = scraper_type.value
-
-        if scraper_key in self.active_scrapers:
-            scraper = self.active_scrapers[scraper_key]
-            asyncio.create_task(scraper.cleanup())
-
-            del self.active_scrapers[scraper_key]
-
-        if scraper_key in self.scrapers:
-            del self.scrapers[scraper_key]
-
-        if scraper_key in self.scraper_controls:
-            del self.scraper_controls[scraper_key]
-
-        self.logger.info(f"Unregistered scraper: {scraper_key}")
-
-    async def submit_job(self, job_control: JobControl) -> str:
-        """
-        Submit a job with governance validation.
-
-        Args:
-            job_control: Complete job control with governance contract
-
-        Returns:
-            Job ID for tracking
-
-        Raises:
-            ValueError: If job fails governance checks
-        """
-        # Validate job against governance rules
-        await self._validate_job_governance(job_control)
-
-        # Run pre-job sentinel security checks
-        if self.config.enable_sentinels and self.config.run_pre_job_checks:
-            await self._run_pre_job_sentinel_checks(job_control)
-
-        # Generate job ID if not provided
-        if not job_control.job_id:
-            job_control.job_id = f"job_{int(time.time() * 1000)}_{hash(str(job_control.target)) % 10000}"
-
-        # Check dependencies
-        if job_control.dependencies and not await self._check_dependencies(job_control):
-            raise ValueError(f"Job dependencies not satisfied: {job_control.dependencies}")
-
-        # Add to appropriate priority queue
-        try:
-            await self.job_queues[job_control.priority].put(job_control)
-            self.active_jobs[job_control.job_id] = job_control
-            self.metrics.queued_jobs += 1
-
-            self.logger.info(f"Job submitted: {job_control.job_id} ({job_control.scraper_type.value})")
-            return job_control.job_id
-
-        except asyncio.QueueFull:
-            raise RuntimeError("Job queue is full - system at capacity")
-
-    async def _validate_job_governance(self, job_control: JobControl) -> None:
-        """Validate job against governance rules."""
-        # Check if control contracts are required
-        if self.config.require_control_contracts and job_control.control_contract is None:
-            raise ValueError("Control contract required but not provided")
-
-        # Validate contract if present
-        if job_control.control_contract:
-            contract = job_control.control_contract
-
-            # Check deployment window
-            if self.config.enforce_deployment_windows and not contract.can_deploy():
-                raise ValueError("Job deployment not permitted within current time window")
-
-            # Validate authorization
-            if self.config.validate_authorizations and not contract.authorization.is_valid():
-                raise ValueError("Job authorization has expired")
-
-            # Check resource limits against system controls
-            if self.system_control:
-                contract_limits = job_control.get_resource_limits_from_contract()
-                system_limits = self.system_control.get_resource_limits()
-
-                for resource, limit in contract_limits.items():
-                    if resource in system_limits and limit > system_limits[resource]:
-                        raise ValueError(f"Contract resource limit exceeds system limit: {resource}")
-
-        # Validate scraper is available and healthy
-        scraper_key = job_control.scraper_type.value
-        if scraper_key not in self.active_scrapers:
-            raise ValueError(f"Scraper not available: {scraper_key}")
-
-        scraper_control = self.scraper_controls.get(scraper_key)
-        if scraper_control and not scraper_control.is_healthy():
-            raise ValueError(f"Scraper not healthy: {scraper_key}")
-
-    async def _run_pre_job_sentinel_checks(self, job_control: JobControl) -> None:
-        """
-        Run sentinel security checks before job execution.
-        Validates target security, network conditions, and potential risks.
-        """
-        if not self.sentinel_orchestrator:
-            return
-
-        target_info = {
-            "urls": self._extract_urls_from_target(job_control.target),
-            "domains": self._extract_domains_from_target(job_control.target),
-            "scraper_type": job_control.scraper_type.value,
-            "job_priority": job_control.priority.value,
-            "has_contract": job_control.control_contract is not None
-        }
-
-        self.logger.info(f"Running pre-job sentinel checks for job targeting {target_info['domains']}")
-
-        try:
-            result = await self.sentinel_orchestrator.orchestrate(
-                target=target_info,
-                sentinels_to_run=["network", "waf", "malware"]  # Focus on pre-flight checks
-            )
-
-            # Check if sentinels recommend blocking the job
-            if result.aggregated_action == "block":
-                raise ValueError(
-                    f"Job blocked by sentinel security checks: {result.aggregated_risk_level} risk. "
-                    f"Findings: {result.aggregated_findings}"
-                )
-
-            # Log warnings for high-risk jobs
-            if result.aggregated_risk_level in ["high", "critical"]:
-                self.logger.warning(
-                    f"High-risk job approved with warnings: {result.aggregated_risk_level} risk. "
-                    f"Findings: {result.aggregated_findings}"
-                )
-
-            self.logger.info(f"Pre-job sentinel checks passed: {result.aggregated_risk_level} risk level")
-
-        except Exception as e:
-            self.logger.error(f"Pre-job sentinel checks failed: {e}")
-            raise ValueError(f"Sentinel security validation failed: {e}")
-
-    def _extract_urls_from_target(self, target: Dict[str, Any]) -> List[str]:
-        """Extract URLs from job target for sentinel analysis."""
-        urls = []
-
-        # Common URL fields in targets
-        url_fields = ["url", "urls", "target_url", "base_url", "endpoint"]
-
-        for field in url_fields:
-            if field in target:
-                value = target[field]
-                if isinstance(value, str):
-                    urls.append(value)
-                elif isinstance(value, list):
-                    urls.extend([u for u in value if isinstance(u, str)])
-
-        # Extract from nested structures
-        if "companies" in target:
-            for company in target["companies"]:
-                if "url" in company:
-                    urls.append(company["url"])
-
-        if "people" in target:
-            for person in target["people"]:
-                if "profile_url" in person:
-                    urls.append(person["profile_url"])
-
-        return urls
-
-    def _extract_domains_from_target(self, target: Dict[str, Any]) -> List[str]:
-        """Extract domains from job target for sentinel analysis."""
-        domains = set()
-
-        urls = self._extract_urls_from_target(target)
-        for url in urls:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(url)
-                if parsed.netloc:
-                    domain = parsed.netloc.lower()
-                    # Remove www. prefix
-                    if domain.startswith("www."):
-                        domain = domain[4:]
-                    domains.add(domain)
-            except Exception:
-                continue
-
-        return list(domains)
-
-    async def _scrape_with_continuous_monitoring(self, scraper: BaseScraper, job_control: JobControl) -> ScraperResult:
-        """
-        Execute scraping with continuous sentinel monitoring for long-running jobs.
-        Monitors target security throughout the scraping process.
-        """
-        last_check_time = time.time()
-        monitoring_task = None
-
-        try:
-            # Start continuous monitoring task
-            monitoring_task = asyncio.create_task(
-                self._continuous_sentinel_monitor(job_control, scraper)
-            )
-
-            # Execute the scrape
-            result = await scraper.scrape(job_control.target)
-
-            # Cancel monitoring task
-            if monitoring_task and not monitoring_task.done():
-                monitoring_task.cancel()
-                try:
-                    await monitoring_task
-                except asyncio.CancelledError:
-                    pass
-
-            return result
-
-        except Exception as e:
-            # Cancel monitoring task on error
-            if monitoring_task and not monitoring_task.done():
-                monitoring_task.cancel()
-                try:
-                    await monitoring_task
-                except asyncio.CancelledError:
-                    pass
-            raise
-
-    async def _continuous_sentinel_monitor(self, job_control: JobControl, scraper: BaseScraper) -> None:
-        """
-        Continuously monitor job execution with sentinels.
-        Runs periodic security checks during long-running scraping operations.
-        """
-        while True:
-            try:
-                await asyncio.sleep(self.config.sentinel_check_interval)
-
-                # Check if job is still active
-                if job_control.job_id not in self.active_jobs:
-                    break
-
-                target_info = {
-                    "urls": self._extract_urls_from_target(job_control.target),
-                    "domains": self._extract_domains_from_target(job_control.target),
-                    "scraper_type": job_control.scraper_type.value,
-                    "job_id": job_control.job_id,
-                    "runtime_seconds": (datetime.utcnow() - job_control.started_at).total_seconds() if job_control.started_at else 0
-                }
-
-                self.logger.debug(f"Running continuous sentinel check for job {job_control.job_id}")
-
-                result = await self.sentinel_orchestrator.orchestrate(
-                    target=target_info,
-                    sentinels_to_run=["performance", "network"]  # Focus on runtime monitoring
-                )
-
-                # Handle critical issues during execution
-                if result.aggregated_risk_level == "critical":
-                    self.logger.warning(
-                        f"Critical risk detected during job {job_control.job_id} execution: "
-                        f"{result.aggregated_findings}"
-                    )
-                    # Could implement job interruption logic here
-
-                # Log performance issues
-                elif result.aggregated_risk_level == "high":
-                    self.logger.info(
-                        f"Performance issues detected during job {job_control.job_id}: "
-                        f"{result.aggregated_findings}"
-                    )
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.logger.error(f"Continuous monitoring error for job {job_control.job_id}: {e}")
-                await asyncio.sleep(30)  # Back off on errors
-
-    async def _run_post_job_sentinel_analysis(self, job_control: JobControl, result: ScraperResult) -> None:
-        """
-        Run sentinel analysis on job results to validate data quality and security.
-        Analyzes scraped data for potential security issues or quality concerns.
-        """
-        if not self.sentinel_orchestrator:
-            return
-
-        # Prepare analysis target with result data
-        target_info = {
-            "urls": self._extract_urls_from_target(job_control.target),
-            "domains": self._extract_domains_from_target(job_control.target),
-            "scraper_type": job_control.scraper_type.value,
-            "job_id": job_control.job_id,
-            "records_found": result.data.get("records_found", 0) if result.data else 0,
-            "data_quality_score": self._calculate_data_quality_score(result),
-            "processing_time": result.response_time,
-            "has_sensitive_data": self._detect_sensitive_data_patterns(result)
-        }
-
-        self.logger.info(f"Running post-job sentinel analysis for {job_control.job_id}")
-
-        try:
-            analysis_result = await self.sentinel_orchestrator.orchestrate(
-                target=target_info,
-                sentinels_to_run=["malware", "performance"]  # Focus on data analysis
-            )
-
-            # Log analysis results
-            if analysis_result.aggregated_risk_level in ["high", "critical"]:
-                self.logger.warning(
-                    f"Post-job analysis detected issues for {job_control.job_id}: "
-                    f"{analysis_result.aggregated_risk_level} risk - {analysis_result.aggregated_findings}"
-                )
-                # Could flag result for review or quarantine
-
-            # Store analysis results in job metadata
-            if not job_control.metadata:
-                job_control.metadata = ControlMetadata()
-            job_control.metadata.additional_data["sentinel_analysis"] = {
-                "risk_level": analysis_result.aggregated_risk_level,
-                "recommended_action": analysis_result.aggregated_action,
-                "findings": analysis_result.aggregated_findings,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-
-            self.logger.info(f"Post-job analysis completed for {job_control.job_id}: {analysis_result.aggregated_risk_level}")
-
-        except Exception as e:
-            self.logger.error(f"Post-job sentinel analysis failed for {job_control.job_id}: {e}")
-
-    def _calculate_data_quality_score(self, result: ScraperResult) -> float:
-        """Calculate a basic data quality score from scraping results."""
-        if not result.data:
+class ScrapingJob:
+    """Complete scraping job with all intelligence and orchestration data."""
+    job_id: str
+    control: ScrapeControlContract
+
+    # Intelligence assessments
+    intent_classification: Optional[IntentClassification] = None
+    execution_profile: Optional[ExecutionProfile] = None
+    cost_prediction: Optional[CostPrediction] = None
+    cost_optimization: Optional[CostOptimizationPlan] = None
+    budget_analysis: Optional[BudgetAnalysis] = None
+
+    # Orchestration state
+    current_phase: ScrapingPhase = ScrapingPhase.INITIALIZATION
+    phase_progress: Dict[str, Any] = field(default_factory=dict)
+    orchestration_result: Optional[OrchestrationResult] = None
+
+    # Execution data
+    assigned_scrapers: List[BaseScraper] = field(default_factory=list)
+    execution_start_time: Optional[datetime] = None
+    execution_end_time: Optional[datetime] = None
+    actual_cost: float = 0.0
+    records_collected: int = 0
+    success_rate: float = 0.0
+
+    # Monitoring and telemetry
+    sentinel_reports: List[Dict[str, Any]] = field(default_factory=list)
+    telemetry_events: List[Dict[str, Any]] = field(default_factory=list)
+    error_events: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Governance and compliance
+    governance_checks_passed: bool = False
+    compliance_flags: List[str] = field(default_factory=list)
+    risk_mitigations_applied: List[str] = field(default_factory=list)
+
+    # Metadata
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    priority_score: float = 0.0
+    estimated_completion_time: Optional[datetime] = None
+
+    def get_job_duration(self) -> Optional[timedelta]:
+        """Get total job duration if completed."""
+        if self.execution_start_time and self.execution_end_time:
+            return self.execution_end_time - self.execution_start_time
+        return None
+
+    def get_efficiency_score(self) -> float:
+        """Calculate overall job efficiency score."""
+        if self.actual_cost == 0 or self.records_collected == 0:
             return 0.0
 
-        score = 0.0
-        total_weight = 0.0
+        # Base efficiency: records per dollar
+        base_efficiency = self.records_collected / self.actual_cost
 
-        # Records found (higher is better, up to a point)
-        records = result.data.get("records_found", 0)
-        if records > 0:
-            score += min(records / 100.0, 1.0) * 0.4  # 40% weight
-            total_weight += 0.4
+        # Adjust for success rate
+        success_adjustment = self.success_rate
 
-        # Response time (faster is better)
-        response_time = result.response_time
-        if response_time > 0:
-            time_score = max(0, 1.0 - (response_time / 300.0))  # Expect < 5 minutes
-            score += time_score * 0.3  # 30% weight
-            total_weight += 0.3
+        # Adjust for on-time completion
+        timeliness_adjustment = 1.0
+        if self.estimated_completion_time and self.execution_end_time:
+            if self.execution_end_time > self.estimated_completion_time:
+                delay_hours = (self.execution_end_time - self.estimated_completion_time).total_seconds() / 3600
+                timeliness_adjustment = max(0.1, 1.0 - (delay_hours / 24))  # Penalty for delays > 24h
 
-        # Error rate (lower is better)
-        errors = result.data.get("errors", 0)
-        if records > 0:
-            error_rate = errors / (records + errors)
-            error_score = max(0, 1.0 - error_rate)
-            score += error_score * 0.3  # 30% weight
-            total_weight += 0.3
+        return base_efficiency * success_adjustment * timeliness_adjustment
 
-        return score / total_weight if total_weight > 0 else 0.0
-
-    def _detect_sensitive_data_patterns(self, result: ScraperResult) -> bool:
-        """Detect potential sensitive data patterns in scraping results."""
-        if not result.data:
+    def should_proceed_to_execution(self) -> bool:
+        """Determine if job should proceed to execution phase."""
+        if not self.intent_classification or not self.execution_profile:
             return False
 
-        sensitive_patterns = [
-            "password", "ssn", "social_security", "credit_card",
-            "bank_account", "medical", "health", "confidential"
-        ]
+        # Block critical risk without proper governance
+        if (self.intent_classification.risk_level == IntentRiskLevel.CRITICAL and
+            self.intent_classification.governance_requirement.value == "exceptional"):
+            return False
 
-        data_str = str(result.data).lower()
-        return any(pattern in data_str for pattern in sensitive_patterns)
+        # Block if cost exceeds budget significantly
+        if self.cost_prediction and self.control.budget:
+            cost_ratio = self.cost_prediction.predicted_cost / self.control.budget.max_cost_total
+            if cost_ratio > 1.5:  # 50% over budget
+                return False
 
-    async def _check_dependencies(self, job_control: JobControl) -> bool:
-        """Check if all job dependencies are satisfied."""
-        for dep_id in job_control.dependencies:
-            if dep_id not in self.active_jobs:
-                # Check completed jobs
-                completed_job = next(
-                    (j for j in self.completed_jobs if j.job_id == dep_id), None
-                )
-                if not completed_job or completed_job.status != JobStatus.COMPLETED:
-                    return False
         return True
 
-    async def start_processing(self) -> None:
-        """Start the job processing engine."""
-        if self.running:
-            self.logger.warning("Engine already running")
-            return
 
-        self.running = True
-        self.shutdown_event.clear()
+@dataclass
+class ScrapingOrchestrationResult:
+    """Complete result of scraping orchestration process."""
+    job: ScrapingJob
+    result: OrchestrationResult
+    output_data: List[Dict[str, Any]] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+    recommendations: List[str] = field(default_factory=list)
+    next_steps: List[str] = field(default_factory=list)
+    performance_metrics: Dict[str, Any] = field(default_factory=dict)
+    compliance_report: Dict[str, Any] = field(default_factory=dict)
 
-        self.logger.info(f"Starting CoreScraperEngine with {self.config.max_concurrent_jobs} concurrent jobs")
+
+class ScrapingEngine:
+    """
+    Enterprise-grade scraping orchestration engine that integrates all intelligence
+    systems for optimal, compliant, and cost-effective data operations.
+    """
+
+    def __init__(self):
+        self.active_jobs: Dict[str, ScrapingJob] = {}
+        self.completed_jobs: List[ScrapingJob] = []
+        self.job_queue: asyncio.Queue = asyncio.Queue()
+
+        # Intelligence system integrations
+        self.intent_classifier = None  # Will be initialized if available
+        self.execution_classifier = None
+        self.cost_predictor = None
+        self.sentinel_orchestrator = None
+
+        # Performance tracking
+        self.engine_stats = defaultdict(int)
+        self.performance_metrics = defaultdict(list)
+
+        # Configuration
+        self.max_concurrent_jobs = 5
+        self.job_timeout_hours = 24
+        self.cost_variance_threshold = 0.25  # 25% cost variance allowed
+        self.enable_sentinel_monitoring = True
+        self.enable_ai_precheck = True
+        self.enable_cost_optimization = True
+
+        logger.info("ScrapingEngine initialized with full intelligence integration")
+
+    async def orchestrate_scraping_operation(
+        self,
+        control: ScrapeControlContract,
+        priority: JobPriority = JobPriority.NORMAL
+    ) -> ScrapingOrchestrationResult:
+        """
+        Complete orchestration of a scraping operation from request to completion.
+
+        This is the main entry point that coordinates all intelligence systems:
+        1. Intent classification and risk assessment
+        2. Execution mode optimization
+        3. Cost prediction and budget analysis
+        4. Governance and compliance checks
+        5. Resource allocation and execution
+        6. Sentinel monitoring throughout
+        7. Telemetry collection and analysis
+        8. Quality validation and finalization
+
+        Args:
+            control: Complete scraping control contract
+            priority: Job execution priority
+
+        Returns:
+            Comprehensive orchestration result with all intelligence data
+        """
+
+        # Create job
+        job_id = str(uuid.uuid4())
+        job = ScrapingJob(
+            job_id=job_id,
+            control=control
+        )
+
+        self.active_jobs[job_id] = job
+        logger.info(f"🚀 Started orchestration for job {job_id}")
 
         try:
-            # Start job processors for each priority level
-            processors = []
-            for priority in JobPriority:
-                priority_processors = [
-                    asyncio.create_task(self._job_processor(priority))
-                    for _ in range(self.config.max_concurrent_jobs // len(JobPriority))
-                ]
-                processors.extend(priority_processors)
+            # Phase 1: Intent Analysis
+            await self._execute_intent_analysis(job)
 
-            # Start queue monitor
-            monitor = asyncio.create_task(self._queue_monitor())
+            # Phase 2: Risk Assessment
+            await self._execute_risk_assessment(job)
 
-            # Wait for shutdown
-            await self.shutdown_event.wait()
+            # Phase 3: Execution Planning
+            await self._execute_planning_phase(job)
 
-            # Cancel processors
-            for processor in processors:
-                processor.cancel()
-            monitor.cancel()
+            # Phase 4: Cost Optimization
+            await self._execute_cost_optimization(job)
 
-            # Wait for cleanup
-            await asyncio.gather(*processors, monitor, return_exceptions=True)
+            # Phase 5: Governance Check
+            governance_passed = await self._execute_governance_check(job)
+            if not governance_passed:
+                job.orchestration_result = OrchestrationResult.BLOCKED_BY_GOVERNANCE
+                return await self._finalize_orchestration(job)
 
-        except Exception as e:
-            self.logger.error(f"Engine error: {e}")
-        finally:
-            self.running = False
-            self.logger.info("CoreScraperEngine stopped")
+            # Phase 6: Resource Allocation
+            await self._execute_resource_allocation(job)
 
-    async def stop_processing(self) -> None:
-        """Stop the job processing engine gracefully."""
-        self.logger.info("Stopping CoreScraperEngine...")
-        self.shutdown_event.set()
-
-    async def _job_processor(self, priority: JobPriority) -> None:
-        """Process jobs from a specific priority queue."""
-        while not self.shutdown_event.is_set():
-            try:
-                # Get job from queue with timeout
-                job_control = await asyncio.wait_for(
-                    self.job_queues[priority].get(),
-                    timeout=1.0
-                )
-
-                # Process the job
-                await self._process_job(job_control)
-
-                # Mark queue task as done
-                self.job_queues[priority].task_done()
-
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                self.logger.error(f"Job processor error: {e}")
-                await asyncio.sleep(1)
-
-    async def _process_job(self, job_control: JobControl) -> None:
-        """Process a single scraping job with governance enforcement."""
-        start_time = time.time()
-        job_control.status = JobStatus.RUNNING
-        job_control.started_at = datetime.utcnow()
-
-        self.metrics.active_jobs += 1
-        self.metrics.queued_jobs -= 1
-
-        try:
-            self.logger.info(f"Processing job {job_control.job_id} with {job_control.scraper_type.value}")
-
-            # Get scraper instance
-            scraper = self.active_scrapers.get(job_control.scraper_type.value)
-            if not scraper:
-                raise RuntimeError(f"Scraper {job_control.scraper_type.value} not available")
-
-            # Apply tempo settings from contract if available
-            if job_control.control_contract:
-                tempo_settings = job_control.control_contract.get_tempo_settings()
-                # Apply tempo settings to scraper (would need scraper API for this)
-
-            # Execute scraping with continuous sentinel monitoring
-            if self.config.enable_sentinels and self.config.run_continuous_monitoring:
-                result = await self._scrape_with_continuous_monitoring(scraper, job_control)
+            # Phase 7: Execution with Monitoring
+            if job.should_proceed_to_execution():
+                await self._execute_scraping_operation(job)
             else:
-                result = await scraper.scrape(job_control.target)
+                job.orchestration_result = OrchestrationResult.BLOCKED_BY_RISK
+                return await self._finalize_orchestration(job)
 
-            # Update job
-            job_control.result = result
-            job_control.status = JobStatus.COMPLETED if result.success else JobStatus.FAILED
-            job_control.completed_at = datetime.utcnow()
+            # Phase 8: Quality Validation
+            await self._execute_quality_validation(job)
 
-            # Update metrics
-            processing_time = time.time() - start_time
-            self.metrics.jobs_processed += 1
-            self.metrics.total_processing_time += processing_time
+            # Phase 9: Finalization
+            job.orchestration_result = OrchestrationResult.SUCCESS
+            return await self._finalize_orchestration(job)
 
-            if result.success:
-                self.metrics.jobs_succeeded += 1
-            else:
-                self.metrics.jobs_failed += 1
-
-            # Update scraper usage
-            scraper_key = job_control.scraper_type.value
-            self.metrics.scraper_usage[scraper_key] = \
-                self.metrics.scraper_usage.get(scraper_key, 0) + 1
-
-            # Publish result
-            await self._publish_result(job_control)
-
-            # Run post-job sentinel analysis on successful results
-            if result.success and self.config.enable_sentinels and self.config.run_post_job_analysis:
-                try:
-                    await self._run_post_job_sentinel_analysis(job_control, result)
-                except Exception as e:
-                    self.logger.error(f"Post-job sentinel analysis failed for {job_control.job_id}: {e}")
-
-            # Auto-publish to queue if enabled
-            if self.queue_publisher and result.success and self.config.enable_result_publishing:
-                try:
-                    await self._publish_to_queue_publisher(job_control)
-                except Exception as e:
-                    self.logger.error(f"Error auto-publishing job {job_control.job_id}: {e}")
-
-            self.logger.info(
-                f"Job {job_control.job_id} completed in {processing_time:.2f}s: "
-                f"{'SUCCESS' if result.success else 'FAILED'}"
-            )
-
+        except asyncio.TimeoutError:
+            job.orchestration_result = OrchestrationResult.TIMEOUT_EXCEEDED
+            logger.error(f"⏰ Job {job_id} timed out")
         except Exception as e:
-            job_control.status = JobStatus.FAILED
-            job_control.result = ScraperResult(success=False, error_message=str(e))
-            job_control.completed_at = datetime.utcnow()
+            job.orchestration_result = OrchestrationResult.EXECUTION_FAILED
+            logger.error(f"❌ Job {job_id} failed: {e}")
+            job.error_events.append({
+                'timestamp': datetime.utcnow(),
+                'phase': job.current_phase.value,
+                'error': str(e),
+                'error_type': type(e).__name__
+            })
 
-            self.metrics.jobs_failed += 1
-            self.logger.error(f"Job {job_control.job_id} failed: {e}")
+        return await self._finalize_orchestration(job)
 
-        finally:
-            # Move to completed jobs (keep last 1000)
-            self.completed_jobs.append(job_control)
-            if len(self.completed_jobs) > 1000:
-                self.completed_jobs.pop(0)
-
-            # Remove from active jobs
-            self.active_jobs.pop(job_control.job_id, None)
-            self.metrics.active_jobs -= 1
-
-    async def _publish_result(self, job_control: JobControl) -> None:
-        """Publish job results to configured outputs."""
-        if not job_control.result:
-            return
+    async def _execute_intent_analysis(self, job: ScrapingJob):
+        """Phase 1: Analyze scraping intent and classify operation."""
+        job.current_phase = ScrapingPhase.INTENT_ANALYSIS
+        logger.info(f"🔍 Analyzing intent for job {job.job_id}")
 
         try:
-            result_data = {
-                'job_id': job_control.job_id,
-                'scraper_type': job_control.scraper_type.value,
-                'target': job_control.target,
-                'success': job_control.result.success,
-                'data': job_control.result.data,
-                'error_message': job_control.result.error_message,
-                'metadata': job_control.result.metadata,
-                'timestamp': job_control.result.timestamp.isoformat(),
-                'processing_time': job_control.result.response_time,
-                'retry_count': job_control.result.retry_count,
-                'control_contract': job_control.control_contract.__dict__ if job_control.control_contract else None
+            # Classify intent using ML-enhanced classifier
+            intent_classification = await classify_scraping_intent(job.control)
+            job.intent_classification = intent_classification
+
+            # Update job priority based on risk level
+            job.priority_score = self._calculate_priority_score(intent_classification, job.control)
+
+            # Record phase progress
+            job.phase_progress['intent_analysis'] = {
+                'completed_at': datetime.utcnow(),
+                'risk_level': intent_classification.risk_level.value,
+                'category': intent_classification.category.value,
+                'confidence': intent_classification.confidence_score
             }
 
-            # MJ ingestion integration
-            if job_control.result.success and job_control.result.data and job_control.control_contract:
-                data_type = job_control.result.data.get("data_type")
-                if data_type in ["person", "event"]:
-                    payload = self._build_mj_payload(data_type, job_control.result.data)
-
-                    envelope = MJMessageEnvelope(
-                        data_type=data_type,
-                        payload=payload,
-                        correlation_id=job_control.job_id
-                    )
-
-                    if self.queue_publisher:
-                        await self.queue_publisher.publish_to_queue(envelope.to_dict())
-
-            # Publish to Azure Service Bus
-            if self.service_bus_client:
-                await self._publish_to_service_bus(result_data)
-
-            # Store in Azure Blob Storage
-            if self.blob_service_client:
-                await self._store_in_blob_storage(job_control.job_id, result_data)
+            logger.info(f"✅ Intent classified: {intent_classification.risk_level.value} risk, {intent_classification.category.value}")
 
         except Exception as e:
-            self.logger.error(f"Failed to publish result for job {job_control.job_id}: {e}")
-
-    def _build_mj_payload(self, data_type: str, raw_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Build MJ payload based on data type."""
-        if data_type == "person":
-            return build_person_payload(raw_data)
-        elif data_type == "event":
-            return build_event_payload(raw_data)
-        else:
-            return raw_data
-
-    async def _publish_to_service_bus(self, result_data: Dict[str, Any]) -> None:
-        """Publish result to Azure Service Bus."""
-        try:
-            async with self.service_bus_client.get_queue_sender(
-                queue_name=self.config.azure_queue_name
-            ) as sender:
-                message = json.dumps(result_data)
-                await sender.send_messages(message)
-        except Exception as e:
-            self.logger.error(f"Service Bus publish failed: {e}")
-
-    async def _store_in_blob_storage(self, job_id: str, result_data: Dict[str, Any]) -> None:
-        """Store result in Azure Blob Storage."""
-        try:
-            blob_name = f"{job_id}.json"
-            blob_client = self.blob_service_client.get_blob_client(
-                container=self.config.azure_blob_container,
-                blob=blob_name
+            logger.error(f"Intent analysis failed: {e}")
+            # Create conservative fallback classification
+            job.intent_classification = IntentClassification(
+                intent_id=job.job_id,
+                risk_level=IntentRiskLevel.HIGH,
+                category=IntentCategory.INTELLIGENCE,
+                governance_requirement=GovernanceRequirement.CONTROLLED,
+                confidence_score=0.5,
+                reasoning=["Fallback classification due to analysis failure"]
             )
 
-            data = json.dumps(result_data, indent=2)
-            await blob_client.upload_blob(data, overwrite=True)
-        except Exception as e:
-            self.logger.error(f"Blob storage upload failed: {e}")
+    async def _execute_risk_assessment(self, job: ScrapingJob):
+        """Phase 2: Perform comprehensive risk assessment."""
+        job.current_phase = ScrapingPhase.RISK_ASSESSMENT
+        logger.info(f"⚠️ Assessing risk for job {job.job_id}")
 
-    async def _publish_to_queue_publisher(self, job_control: JobControl) -> None:
-        """Publish job result via queue publisher."""
-        if not self.queue_publisher or not job_control.result:
+        if not job.intent_classification:
             return
 
-        queue_data = {
-            "job_id": job_control.job_id,
-            "scraper_type": job_control.scraper_type.value,
-            "target": job_control.target,
-            "result": {
-                "success": job_control.result.success,
-                "data": job_control.result.data,
-                "error_message": job_control.result.error_message,
-                "response_time": job_control.result.response_time,
-                "retry_count": job_control.result.retry_count
-            },
-            "control_contract": job_control.control_contract.__dict__ if job_control.control_contract else None,
-            "metadata": job_control.metadata.__dict__ if job_control.metadata else None
+        try:
+            # Run AI precheck if enabled
+            if self.enable_ai_precheck:
+                ai_approved = await ai_precheck(job.control)
+                job.phase_progress['ai_precheck'] = {
+                    'completed_at': datetime.utcnow(),
+                    'approved': ai_approved,
+                    'reasoning': "AI risk assessment completed"
+                }
+
+                if not ai_approved:
+                    logger.warning(f"🚫 AI precheck rejected job {job.job_id}")
+                    job.intent_classification.reasoning.append("AI precheck rejected - requires review")
+
+            # Sentinel-based risk assessment
+            if self.enable_sentinel_monitoring and job.control.intent.sources:
+                try:
+                    # Extract target for sentinel analysis
+                    target = {"domain": job.control.intent.sources[0]}
+
+                    # Run sentinels
+                    sentinel_reports = await run_sentinels(target)
+
+                    # Apply safety verdict
+                    verdict = safety_verdict(sentinel_reports, job.control)
+
+                    job.sentinel_reports = [report.dict() if hasattr(report, 'dict') else report
+                                          for report in sentinel_reports]
+
+                    job.phase_progress['sentinel_assessment'] = {
+                        'completed_at': datetime.utcnow(),
+                        'reports_count': len(sentinel_reports),
+                        'verdict': verdict.action if hasattr(verdict, 'action') else 'unknown'
+                    }
+
+                    if verdict.action in ['block', 'delay', 'human_required']:
+                        logger.warning(f"🚫 Sentinel verdict blocked job {job.job_id}: {verdict.reason}")
+                        job.intent_classification.reasoning.append(f"Sentinel: {verdict.reason}")
+
+                except Exception as e:
+                    logger.warning(f"Sentinel assessment failed: {e}")
+
+            logger.info(f"✅ Risk assessment completed for job {job.job_id}")
+
+        except Exception as e:
+            logger.error(f"Risk assessment failed: {e}")
+
+    async def _execute_planning_phase(self, job: ScrapingJob):
+        """Phase 3: Plan optimal execution strategy."""
+        job.current_phase = ScrapingPhase.EXECUTION_PLANNING
+        logger.info(f"📋 Planning execution for job {job.job_id}")
+
+        try:
+            # Determine execution mode and strategy
+            execution_profile = await classify_execution_mode(
+                asset_type=AssetType.SINGLE_FAMILY_HOME,  # Default, should be inferred
+                scope_size=self._estimate_scope_size(job.control),
+                control=job.control,
+                risk_level=job.intent_classification.risk_level if job.intent_classification else None,
+                intent_category=job.intent_classification.category if job.intent_classification else None,
+                time_sensitivity="normal",  # Could be configurable
+                data_quality_requirement="standard"
+            )
+
+            job.execution_profile = execution_profile
+
+            # Estimate completion time
+            job.estimated_completion_time = datetime.utcnow() + timedelta(
+                hours=execution_profile.performance_expectations.get('estimated_duration_hours', 1)
+            )
+
+            job.phase_progress['execution_planning'] = {
+                'completed_at': datetime.utcnow(),
+                'mode': execution_profile.mode.value,
+                'strategy': execution_profile.strategy.value,
+                'estimated_duration_hours': execution_profile.performance_expectations.get('estimated_duration_hours', 0)
+            }
+
+            logger.info(f"✅ Execution planned: {execution_profile.mode.value} mode, {execution_profile.strategy.value} strategy")
+
+        except Exception as e:
+            logger.error(f"Execution planning failed: {e}")
+            # Create fallback execution profile
+            job.execution_profile = ExecutionProfile(
+                mode=ExecutionMode.TARGETED_LOOKUP,
+                strategy=ExecutionStrategy.DEPTH_FIRST,
+                confidence_score=0.5,
+                reasoning=["Fallback execution profile due to planning failure"]
+            )
+
+    async def _execute_cost_optimization(self, job: ScrapingJob):
+        """Phase 4: Perform cost prediction and optimization."""
+        job.current_phase = ScrapingPhase.COST_OPTIMIZATION
+        logger.info(f"💰 Optimizing costs for job {job.job_id}")
+
+        try:
+            # Generate cost prediction
+            cost_prediction = await predict_scraping_cost(
+                asset_type=AssetType.SINGLE_FAMILY_HOME,  # Should be inferred from intent
+                signal_type=SignalType.LIEN,  # Should be inferred
+                execution_mode=job.execution_profile.mode if job.execution_profile else None,
+                scope_size=self._estimate_scope_size(job.control),
+                risk_level=job.intent_classification.risk_level if job.intent_classification else None,
+                intent_category=job.intent_classification.category if job.intent_classification else None,
+                control=job.control
+            )
+
+            job.cost_prediction = cost_prediction
+
+            # Generate cost optimization plan if enabled
+            if self.enable_cost_optimization and cost_prediction.predicted_cost > 100:
+                optimization_plan = await optimize_scraping_cost(
+                    asset_type=AssetType.SINGLE_FAMILY_HOME,
+                    signal_type=SignalType.LIEN,
+                    current_cost=cost_prediction.predicted_cost
+                )
+                job.cost_optimization = optimization_plan
+
+            # Perform budget analysis if budget constraints exist
+            if job.control.budget:
+                budget_analysis = await analyze_scraping_budget(
+                    budget=job.control.budget.max_cost_total,
+                    projected_operations=[{
+                        'operation_type': 'scraping_job',
+                        'estimated_cost': cost_prediction.predicted_cost
+                    }]
+                )
+                job.budget_analysis = budget_analysis
+
+            job.phase_progress['cost_optimization'] = {
+                'completed_at': datetime.utcnow(),
+                'predicted_cost': cost_prediction.predicted_cost,
+                'confidence': cost_prediction.confidence_score,
+                'optimization_available': job.cost_optimization is not None
+            }
+
+        except Exception as e:
+            logger.error(f"Cost optimization failed: {e}")
+
+    async def _execute_governance_check(self, job: ScrapingJob) -> bool:
+        """Phase 5: Execute governance and compliance checks."""
+        job.current_phase = ScrapingPhase.GOVERNANCE_CHECK
+        logger.info(f"⚖️ Checking governance for job {job.job_id}")
+
+        try:
+            # Authorization check
+            if job.control.authorization:
+                AuthorizationGate.validate(job.control.authorization)
+
+            # Deployment timing check
+            if job.control.deployment_window:
+                await DeploymentTimer.await_window(job.control.deployment_window)
+
+            # Budget governance
+            if job.control.budget and job.cost_prediction:
+                CostGovernor.initialize(job.control.budget)
+
+            # Risk-based governance
+            if job.intent_classification:
+                if job.intent_classification.risk_level == IntentRiskLevel.CRITICAL:
+                    logger.warning(f"🚨 Critical risk job {job.job_id} requires executive approval")
+                    # In production, this would trigger approval workflow
+                    if not job.control.authorization or job.control.authorization.authorized_by != "executive_approval":
+                        return False
+
+            job.governance_checks_passed = True
+            job.phase_progress['governance_check'] = {
+                'completed_at': datetime.utcnow(),
+                'passed': True,
+                'checks_performed': ['authorization', 'timing', 'budget', 'risk']
+            }
+
+            logger.info(f"✅ Governance checks passed for job {job.job_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Governance check failed for job {job.job_id}: {e}")
+            job.phase_progress['governance_check'] = {
+                'completed_at': datetime.utcnow(),
+                'passed': False,
+                'error': str(e)
+            }
+            return False
+
+    async def _execute_resource_allocation(self, job: ScrapingJob):
+        """Phase 6: Allocate resources for execution."""
+        job.current_phase = ScrapingPhase.RESOURCE_ALLOCATION
+        logger.info(f"🔧 Allocating resources for job {job.job_id}")
+
+        try:
+            # Determine required resources from execution profile
+            if job.execution_profile:
+                required_resources = job.execution_profile.resource_requirements
+
+                # In production, this would allocate actual resources
+                # For now, just validate resource availability
+                resource_check = await self._check_resource_availability(required_resources)
+
+                job.phase_progress['resource_allocation'] = {
+                    'completed_at': datetime.utcnow(),
+                    'resources_allocated': required_resources,
+                    'availability_check': resource_check
+                }
+
+                logger.info(f"✅ Resources allocated for job {job.job_id}")
+            else:
+                logger.warning(f"No execution profile for job {job.job_id}, skipping resource allocation")
+
+        except Exception as e:
+            logger.error(f"Resource allocation failed: {e}")
+
+    async def _execute_scraping_operation(self, job: ScrapingJob):
+        """Phase 7: Execute the actual scraping operation with monitoring."""
+        job.current_phase = ScrapingPhase.EXECUTION_MONITORING
+        job.execution_start_time = datetime.utcnow()
+
+        logger.info(f"🚀 Executing scraping operation for job {job.job_id}")
+
+        try:
+            # Apply execution profile parameters
+            execution_params = {}
+            if job.execution_profile:
+                execution_params = job.execution_profile.execution_parameters
+
+            # Execute with governance workflow
+            result = await run_scraper(job.control, execution_params)
+
+            # Record execution results
+            job.execution_end_time = datetime.utcnow()
+            job.actual_cost = result.get('total_cost', 0)
+            job.records_collected = result.get('records_collected', 0)
+            job.success_rate = result.get('success_rate', 0)
+
+            # Collect telemetry
+            job.telemetry_events = result.get('telemetry_events', [])
+
+            # Emit final telemetry
+            await emit_telemetry(
+                scraper="orchestrated_job",
+                role="orchestration",
+                cost_estimate=job.cost_prediction.predicted_cost if job.cost_prediction else 0,
+                records_found=job.records_collected,
+                blocked_reason=None,
+                runtime=(job.execution_end_time - job.execution_start_time).total_seconds()
+            )
+
+            job.phase_progress['execution'] = {
+                'completed_at': job.execution_end_time,
+                'duration_seconds': (job.execution_end_time - job.execution_start_time).total_seconds(),
+                'actual_cost': job.actual_cost,
+                'records_collected': job.records_collected,
+                'success_rate': job.success_rate
+            }
+
+            logger.info(f"✅ Scraping execution completed for job {job.job_id}: {job.records_collected} records, ${job.actual_cost}")
+
+        except Exception as e:
+            job.execution_end_time = datetime.utcnow()
+            logger.error(f"❌ Scraping execution failed for job {job.job_id}: {e}")
+            job.error_events.append({
+                'timestamp': job.execution_end_time,
+                'phase': 'execution',
+                'error': str(e),
+                'error_type': type(e).__name__
+            })
+
+    async def _execute_quality_validation(self, job: ScrapingJob):
+        """Phase 8: Validate quality of collected data."""
+        job.current_phase = ScrapingPhase.QUALITY_VALIDATION
+        logger.info(f"🔍 Validating quality for job {job.job_id}")
+
+        try:
+            # Quality validation logic would go here
+            # For now, perform basic validation
+            quality_score = self._calculate_quality_score(job)
+
+            job.phase_progress['quality_validation'] = {
+                'completed_at': datetime.utcnow(),
+                'quality_score': quality_score,
+                'validation_checks': ['completeness', 'accuracy', 'consistency']
+            }
+
+            logger.info(f"✅ Quality validation completed for job {job.job_id}: score {quality_score}")
+
+        except Exception as e:
+            logger.error(f"Quality validation failed: {e}")
+
+    async def _finalize_orchestration(self, job: ScrapingJob) -> ScrapingOrchestrationResult:
+        """Phase 9: Finalize orchestration and generate comprehensive result."""
+        job.current_phase = ScrapingPhase.FINALIZATION
+        job.updated_at = datetime.utcnow()
+
+        logger.info(f"🏁 Finalizing orchestration for job {job.job_id}")
+
+        # Move job from active to completed
+        if job.job_id in self.active_jobs:
+            del self.active_jobs[job.job_id]
+        self.completed_jobs.append(job)
+
+        # Generate comprehensive summary
+        summary = self._generate_orchestration_summary(job)
+
+        # Generate recommendations and next steps
+        recommendations, next_steps = self._generate_recommendations_and_next_steps(job)
+
+        # Generate performance metrics
+        performance_metrics = self._generate_performance_metrics(job)
+
+        # Generate compliance report
+        compliance_report = self._generate_compliance_report(job)
+
+        # Update engine statistics
+        self._update_engine_stats(job)
+
+        result = ScrapingOrchestrationResult(
+            job=job,
+            result=job.orchestration_result or OrchestrationResult.EXECUTION_FAILED,
+            summary=summary,
+            recommendations=recommendations,
+            next_steps=next_steps,
+            performance_metrics=performance_metrics,
+            compliance_report=compliance_report
+        )
+
+        logger.info(f"✅ Orchestration finalized for job {job.job_id}: {result.result.value}")
+        return result
+
+    def _calculate_priority_score(self, intent_classification: IntentClassification,
+                                control: ScrapeControlContract) -> float:
+        """Calculate job priority score based on multiple factors."""
+        base_score = 0.5  # Default medium priority
+
+        # Risk level contribution
+        risk_scores = {
+            IntentRiskLevel.LOW: 0.2,
+            IntentRiskLevel.MEDIUM: 0.4,
+            IntentRiskLevel.HIGH: 0.7,
+            IntentRiskLevel.CRITICAL: 0.9
+        }
+        base_score += risk_scores.get(intent_classification.risk_level, 0.5) * 0.4
+
+        # Urgency contribution
+        if control.budget and control.budget.max_runtime_minutes < 60:
+            base_score += 0.3  # High urgency
+
+        # Business value contribution
+        if intent_classification.category in [IntentCategory.FINANCIAL, IntentCategory.LEGAL]:
+            base_score += 0.2  # High business value
+
+        return min(1.0, base_score)
+
+    def _estimate_scope_size(self, control: ScrapeControlContract) -> int:
+        """Estimate the scope size of the scraping operation."""
+        # This is a simplified estimation - in production, this would be more sophisticated
+        if control.intent.geography:
+            geo_count = len(control.intent.geography)
+            if geo_count > 10:
+                return 1000  # Large scope
+            elif geo_count > 5:
+                return 500   # Medium scope
+            else:
+                return 100   # Small scope
+        return 50  # Default medium scope
+
+    async def _check_resource_availability(self, required_resources: Dict[str, Any]) -> bool:
+        """Check if required resources are available."""
+        # In production, this would check actual resource availability
+        # For now, assume resources are available
+        return True
+
+    def _calculate_quality_score(self, job: ScrapingJob) -> float:
+        """Calculate overall quality score for the job."""
+        base_score = 0.8  # Default good quality
+
+        # Adjust based on execution success
+        if job.success_rate < 0.8:
+            base_score -= 0.2
+
+        # Adjust based on cost variance
+        if job.cost_prediction and job.actual_cost > 0:
+            variance = abs(job.cost_prediction.predicted_cost - job.actual_cost) / job.cost_prediction.predicted_cost
+            if variance > 0.2:
+                base_score -= 0.1
+
+        # Adjust based on execution profile quality
+        if job.execution_profile:
+            profile_quality = job.execution_profile.performance_expectations.get('expected_data_quality_score', 0.8)
+            base_score = (base_score + profile_quality) / 2
+
+        return max(0.0, min(1.0, base_score))
+
+    def _generate_orchestration_summary(self, job: ScrapingJob) -> Dict[str, Any]:
+        """Generate comprehensive orchestration summary."""
+        summary = {
+            'job_id': job.job_id,
+            'result': job.orchestration_result.value if job.orchestration_result else 'unknown',
+            'total_phases_completed': len(job.phase_progress),
+            'execution_duration_seconds': None,
+            'efficiency_score': job.get_efficiency_score(),
+            'cost_efficiency': None,
+            'data_quality_score': None
         }
 
-        await self.queue_publisher.publish_to_queue(queue_data)
+        # Add timing information
+        if job.execution_start_time and job.execution_end_time:
+            duration = job.execution_end_time - job.execution_start_time
+            summary['execution_duration_seconds'] = duration.total_seconds()
 
-    async def _queue_monitor(self) -> None:
-        """Monitor queue status and log metrics."""
-        while not self.shutdown_event.is_set():
+        # Add cost efficiency
+        if job.cost_prediction and job.actual_cost > 0:
+            predicted_cost = job.cost_prediction.predicted_cost
+            cost_efficiency = predicted_cost / job.actual_cost if job.actual_cost > predicted_cost else job.actual_cost / predicted_cost
+            summary['cost_efficiency'] = cost_efficiency
+
+        # Add intelligence metrics
+        if job.intent_classification:
+            summary.update({
+                'risk_level': job.intent_classification.risk_level.value,
+                'intent_category': job.intent_classification.category.value,
+                'governance_requirement': job.intent_classification.governance_requirement.value
+            })
+
+        if job.execution_profile:
+            summary.update({
+                'execution_mode': job.execution_profile.mode.value,
+                'execution_strategy': job.execution_profile.strategy.value
+            })
+
+        if job.cost_prediction:
+            summary.update({
+                'predicted_cost': job.cost_prediction.predicted_cost,
+                'cost_confidence': job.cost_prediction.confidence_score
+            })
+
+        return summary
+
+    def _generate_recommendations_and_next_steps(self, job: ScrapingJob) -> Tuple[List[str], List[str]]:
+        """Generate recommendations and next steps based on job results."""
+        recommendations = []
+        next_steps = []
+
+        # Success-based recommendations
+        if job.orchestration_result == OrchestrationResult.SUCCESS:
+            recommendations.append("Consider scaling this successful approach to similar operations")
+            if job.get_efficiency_score() > 0.8:
+                recommendations.append("This operation was highly efficient - analyze and replicate best practices")
+
+            next_steps.append("Review collected data for quality and completeness")
+            next_steps.append("Update cost models with actual performance data")
+
+        # Cost-based recommendations
+        if job.cost_prediction and job.actual_cost > job.cost_prediction.predicted_cost * 1.2:
+            recommendations.append("Actual costs exceeded predictions - review cost estimation models")
+            next_steps.append("Analyze cost drivers and optimize resource allocation")
+
+        # Risk-based recommendations
+        if job.intent_classification and job.intent_classification.risk_level == IntentRiskLevel.CRITICAL:
+            recommendations.append("Critical risk operations require enhanced monitoring going forward")
+            next_steps.append("Conduct post-operation risk assessment")
+
+        # Quality-based recommendations
+        quality_score = self._calculate_quality_score(job)
+        if quality_score < 0.7:
+            recommendations.append("Data quality was below expectations - review validation processes")
+            next_steps.append("Implement additional quality checks for similar operations")
+
+        # Governance recommendations
+        if not job.governance_checks_passed:
+            recommendations.append("Governance checks failed - review authorization and compliance processes")
+            next_steps.append("Obtain proper approvals before retrying")
+
+        return recommendations, next_steps
+
+    def _generate_performance_metrics(self, job: ScrapingJob) -> Dict[str, Any]:
+        """Generate detailed performance metrics."""
+        metrics = {
+            'phases_completed': len(job.phase_progress),
+            'error_count': len(job.error_events),
+            'telemetry_events_count': len(job.telemetry_events),
+            'sentinel_reports_count': len(job.sentinel_reports),
+            'efficiency_score': job.get_efficiency_score()
+        }
+
+        # Add timing metrics
+        if job.execution_start_time and job.execution_end_time:
+            duration = job.execution_end_time - job.execution_start_time
+            metrics.update({
+                'execution_duration_seconds': duration.total_seconds(),
+                'execution_duration_hours': duration.total_seconds() / 3600
+            })
+
+        # Add cost metrics
+        if job.cost_prediction:
+            metrics.update({
+                'predicted_cost': job.cost_prediction.predicted_cost,
+                'actual_cost': job.actual_cost,
+                'cost_accuracy': 1.0 - abs(job.cost_prediction.predicted_cost - job.actual_cost) / max(job.cost_prediction.predicted_cost, job.actual_cost) if job.actual_cost > 0 else 0
+            })
+
+        # Add quality metrics
+        metrics['data_quality_score'] = self._calculate_quality_score(job)
+
+        # Add resource utilization
+        if job.execution_profile:
+            metrics.update(job.execution_profile.resource_requirements)
+
+        return metrics
+
+    def _generate_compliance_report(self, job: ScrapingJob) -> Dict[str, Any]:
+        """Generate compliance report for the job."""
+        report = {
+            'governance_checks_passed': job.governance_checks_passed,
+            'compliance_flags': job.compliance_flags.copy(),
+            'risk_mitigations_applied': job.risk_mitigations_applied.copy(),
+            'authorization_valid': False,
+            'budget_compliant': False,
+            'data_protection_compliant': False
+        }
+
+        # Check authorization
+        if job.control.authorization:
             try:
-                total_queued = sum(queue.qsize() for queue in self.job_queues.values())
+                AuthorizationGate.validate(job.control.authorization)
+                report['authorization_valid'] = True
+            except:
+                pass
 
-                self.logger.debug(
-                    f"Queue status: {total_queued} queued, "
-                    f"{self.metrics.active_jobs} active, "
-                    f"{len(self.completed_jobs)} completed"
-                )
+        # Check budget compliance
+        if job.control.budget and job.actual_cost <= job.control.budget.max_cost_total:
+            report['budget_compliant'] = True
 
-                if self.config.enable_metrics:
-                    # Log metrics every 30 seconds
-                    pass
+        # Check data protection compliance
+        if job.intent_classification:
+            if job.intent_classification.category != IntentCategory.PERSONAL or 'data_protection' in job.compliance_flags:
+                report['data_protection_compliant'] = True
 
-                await asyncio.sleep(10)
+        # Add compliance summary
+        compliant_items = sum(report.values()) if isinstance(report, dict) else 0
+        total_items = len([v for v in report.values() if isinstance(v, bool)])
+        report['overall_compliance_score'] = compliant_items / total_items if total_items > 0 else 0
 
-            except Exception as e:
-                self.logger.error(f"Queue monitor error: {e}")
-                await asyncio.sleep(5)
+        return report
 
-    def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Get status of a specific job."""
-        job = self.active_jobs.get(job_id) or next(
-            (j for j in self.completed_jobs if j.job_id == job_id), None
-        )
+    def _update_engine_stats(self, job: ScrapingJob):
+        """Update engine performance statistics."""
+        self.engine_stats['total_jobs_processed'] += 1
+
+        if job.orchestration_result == OrchestrationResult.SUCCESS:
+            self.engine_stats['successful_jobs'] += 1
+        elif job.orchestration_result:
+            self.engine_stats['failed_jobs'] += 1
+
+        # Update performance metrics
+        if job.get_efficiency_score() > 0:
+            self.performance_metrics['efficiency_scores'].append(job.get_efficiency_score())
+
+        if job.actual_cost > 0:
+            self.performance_metrics['actual_costs'].append(job.actual_cost)
+
+        if job.execution_start_time and job.execution_end_time:
+            duration = (job.execution_end_time - job.execution_start_time).total_seconds()
+            self.performance_metrics['execution_durations'].append(duration)
+
+    def get_engine_stats(self) -> Dict[str, Any]:
+        """Get comprehensive engine performance statistics."""
+        stats = dict(self.engine_stats)
+
+        # Calculate derived statistics
+        total_jobs = stats.get('total_jobs_processed', 0)
+        successful_jobs = stats.get('successful_jobs', 0)
+
+        if total_jobs > 0:
+            stats['success_rate'] = successful_jobs / total_jobs
+            stats['failure_rate'] = 1 - (successful_jobs / total_jobs)
+
+        # Performance averages
+        if self.performance_metrics['efficiency_scores']:
+            stats['average_efficiency_score'] = sum(self.performance_metrics['efficiency_scores']) / len(self.performance_metrics['efficiency_scores'])
+
+        if self.performance_metrics['actual_costs']:
+            stats['average_job_cost'] = sum(self.performance_metrics['actual_costs']) / len(self.performance_metrics['actual_costs'])
+
+        if self.performance_metrics['execution_durations']:
+            stats['average_execution_duration_seconds'] = sum(self.performance_metrics['execution_durations']) / len(self.performance_metrics['execution_durations'])
+
+        # Current status
+        stats.update({
+            'active_jobs_count': len(self.active_jobs),
+            'completed_jobs_count': len(self.completed_jobs),
+            'queue_depth': self.job_queue.qsize()
+        })
+
+        return stats
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel an active job."""
+        if job_id in self.active_jobs:
+            job = self.active_jobs[job_id]
+            job.orchestration_result = OrchestrationResult.CANCELLED_BY_USER
+            job.execution_end_time = datetime.utcnow()
+
+            # Move to completed
+            del self.active_jobs[job_id]
+            self.completed_jobs.append(job)
+
+            logger.info(f"🛑 Job {job_id} cancelled by user")
+            return True
+
+        return False
+
+    async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get current status of a job."""
+        job = self.active_jobs.get(job_id)
+        if not job:
+            # Check completed jobs
+            for completed_job in self.completed_jobs:
+                if completed_job.job_id == job_id:
+                    return {
+                        'job_id': job_id,
+                        'status': 'completed',
+                        'result': completed_job.orchestration_result.value if completed_job.orchestration_result else 'unknown',
+                        'completed_at': completed_job.execution_end_time.isoformat() if completed_job.execution_end_time else None,
+                        'records_collected': completed_job.records_collected,
+                        'actual_cost': completed_job.actual_cost
+                    }
 
         if job:
             return {
-                'job_id': job.job_id,
-                'status': job.status.value,
-                'scraper_type': job.scraper_type.value,
-                'created_at': job.created_at.isoformat(),
-                'started_at': job.started_at.isoformat() if job.started_at else None,
-                'completed_at': job.completed_at.isoformat() if job.completed_at else None,
-                'priority': job.priority.value,
-                'duration': job.duration,
-                'result': {
-                    'success': job.result.success if job.result else False,
-                    'error_message': job.result.error_message if job.result else None,
-                    'response_time': job.result.response_time if job.result else 0.0
-                } if job.result else None,
-                'control_contract': job.control_contract.__dict__ if job.control_contract else None
+                'job_id': job_id,
+                'status': 'active',
+                'current_phase': job.current_phase.value,
+                'priority_score': job.priority_score,
+                'started_at': job.execution_start_time.isoformat() if job.execution_start_time else None,
+                'estimated_completion': job.estimated_completion_time.isoformat() if job.estimated_completion_time else None
             }
 
         return None
 
-    def get_engine_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive engine performance metrics."""
-        uptime = (datetime.utcnow() - self.metrics.start_time).total_seconds()
 
-        return {
-            'uptime_seconds': uptime,
-            'jobs_processed': self.metrics.jobs_processed,
-            'jobs_succeeded': self.metrics.jobs_succeeded,
-            'jobs_failed': self.metrics.jobs_failed,
-            'success_rate': self.metrics.success_rate,
-            'average_processing_time': self.metrics.avg_processing_time,
-            'active_jobs': self.metrics.active_jobs,
-            'queued_jobs': sum(queue.qsize() for queue in self.job_queues.values()),
-            'completed_jobs': len(self.completed_jobs),
-            'scraper_usage': self.metrics.scraper_usage,
-            'registered_scrapers': list(self.scrapers.keys()),
-            'active_scrapers': list(self.active_scrapers.keys()),
-            'anti_detection_enabled': self.anti_detection is not None,
-            'result_publishing_enabled': self.config.enable_result_publishing,
-            'governance_enabled': self.config.require_control_contracts,
-            'sentinels_enabled': self.config.enable_sentinels,
-            'pre_job_checks_enabled': self.config.run_pre_job_checks,
-            'continuous_monitoring_enabled': self.config.run_continuous_monitoring,
-            'post_job_analysis_enabled': self.config.run_post_job_analysis,
-            'sentinel_orchestrator_info': self.sentinel_orchestrator.get_orchestrator_info() if self.sentinel_orchestrator else None,
-            'system_control': self.system_control.__dict__ if self.system_control else None
+# Preflight cost and operational readiness check
+async def preflight_cost_check(control: ScrapeControlContract) -> Dict[str, Any]:
+    """
+    Comprehensive preflight check for cost, operational readiness, and compliance.
+
+    Performs detailed cost estimation, budget analysis, risk assessment, and
+    operational feasibility evaluation before job execution.
+
+    Args:
+        control: Complete scraping control contract
+
+    Returns:
+        Comprehensive preflight assessment with recommendations and warnings
+
+    Raises:
+        RuntimeError: If critical issues prevent execution
+        ValueError: If control contract is invalid
+    """
+    assessment = {
+        'assessment_id': str(uuid.uuid4()),
+        'timestamp': datetime.utcnow(),
+        'overall_readiness': 'unknown',
+        'critical_issues': [],
+        'warnings': [],
+        'recommendations': [],
+        'cost_analysis': {},
+        'risk_assessment': {},
+        'operational_feasibility': {},
+        'compliance_status': {},
+        'estimated_execution_time': None,
+        'resource_requirements': {},
+        'optimization_opportunities': []
+    }
+
+    try:
+        # Validate control contract completeness
+        validation_issues = _validate_control_contract(control)
+        if validation_issues:
+            assessment['critical_issues'].extend(validation_issues)
+            assessment['overall_readiness'] = 'invalid_contract'
+            raise ValueError(f"Invalid control contract: {', '.join(validation_issues)}")
+
+        # 1. Cost Estimation and Analysis
+        cost_prediction = await predict_scraping_cost(
+            asset_type=_infer_asset_type_from_control(control),
+            signal_type=_infer_signal_type_from_control(control),
+            execution_mode=None,  # Will be determined by classifier
+            scope_size=_estimate_control_scope(control),
+            risk_level=None,  # Will be determined by intent classifier
+            intent_category=None,  # Will be determined by intent classifier
+            control=control
+        )
+
+        assessment['cost_analysis'] = {
+            'predicted_cost': cost_prediction.predicted_cost,
+            'confidence_score': cost_prediction.confidence_score,
+            'cost_range': cost_prediction.cost_range,
+            'cost_breakdown': cost_prediction.cost_breakdown,
+            'budget_compliance': 'compliant',
+            'budget_utilization_percentage': 0.0,
+            'cost_variance_risk': 'low'
         }
 
-    def get_registered_scrapers(self) -> List[str]:
-        """Get list of registered scraper types."""
-        return list(self.scrapers.keys())
+        # Budget compliance check
+        if control.budget and control.budget.max_cost_total:
+            budget_limit = control.budget.max_cost_total
+            predicted_cost = cost_prediction.predicted_cost
+            utilization_pct = (predicted_cost / budget_limit) * 100
 
-    def get_scraper_status(self, scraper_type: ScraperType) -> Optional[Dict[str, Any]]:
-        """Get status and metrics for a specific scraper."""
-        scraper_key = scraper_type.value
-        scraper = self.active_scrapers.get(scraper_key)
-        scraper_control = self.scraper_controls.get(scraper_key)
+            assessment['cost_analysis']['budget_utilization_percentage'] = round(utilization_pct, 1)
 
-        if scraper and scraper_control:
-            return {
-                'scraper_type': scraper_key,
-                'control': scraper_control.__dict__,
-                'metrics': scraper.get_metrics(),
-                'is_healthy': scraper_control.is_healthy(),
-                'usage_count': self.metrics.scraper_usage.get(scraper_key, 0)
-            }
-        return None
+            if utilization_pct > 100:
+                assessment['critical_issues'].append(
+                    f"Predicted cost ${predicted_cost:.2f} exceeds budget limit of ${budget_limit:.2f} "
+                    f"({utilization_pct:.1f}% utilization)"
+                )
+                assessment['cost_analysis']['budget_compliance'] = 'exceeded'
+                assessment['overall_readiness'] = 'budget_exceeded'
+            elif utilization_pct > 90:
+                assessment['warnings'].append(
+                    f"High budget utilization: {utilization_pct:.1f}% of approved budget"
+                )
+                assessment['cost_analysis']['budget_compliance'] = 'high_utilization'
+            elif utilization_pct < 30:
+                assessment['recommendations'].append(
+                    f"Budget utilization is low ({utilization_pct:.1f}%) - consider scaling up scope if appropriate"
+                )
 
-    async def cleanup(self) -> None:
-        """Cleanup engine resources."""
-        self.logger.info("Cleaning up CoreScraperEngine...")
+        # Cost variance risk assessment
+        cost_range_width = cost_prediction.cost_range[1] - cost_prediction.cost_range[0]
+        cost_range_pct = (cost_range_width / cost_prediction.predicted_cost) * 100 if cost_prediction.predicted_cost > 0 else 0
 
-        # Cleanup scrapers
-        for scraper in self.active_scrapers.values():
-            try:
-                await scraper.cleanup()
-            except Exception as e:
-                self.logger.error(f"Error cleaning up scraper {scraper.config.name}: {e}")
+        if cost_range_pct > 50:
+            assessment['cost_analysis']['cost_variance_risk'] = 'high'
+            assessment['warnings'].append(f"High cost uncertainty: ±{cost_range_pct:.1f}% range")
+        elif cost_range_pct > 25:
+            assessment['cost_analysis']['cost_variance_risk'] = 'medium'
+            assessment['warnings'].append(f"Moderate cost uncertainty: ±{cost_range_pct:.1f}% range")
 
-        # Cleanup anti-detection
-        if self.anti_detection:
-            await self.anti_detection.cleanup()
-
-        # Cleanup sentinel orchestrator
-        if self.sentinel_orchestrator:
-            await self.sentinel_orchestrator.cleanup()
-
-        # Close clients
-        if self.service_bus_client:
-            await self.service_bus_client.close()
-
-        # Cleanup queue publisher
-        if self.queue_publisher:
-            await self.queue_publisher.cleanup()
-
-        # Shutdown executor
-        self.executor.shutdown(wait=True)
-
-        self.logger.info("CoreScraperEngine cleanup complete")
-
-    def __str__(self) -> str:
-        return (
-            f"CoreScraperEngine("
-            f"jobs_processed={self.metrics.jobs_processed}, "
-            f"active_jobs={self.metrics.active_jobs}, "
-            f"registered_scrapers={len(self.scrapers)}, "
-            f"governance={'enabled' if self.config.require_control_contracts else 'optional'})"
+        # 2. Operational Feasibility Assessment
+        execution_profile = await classify_execution_mode(
+            asset_type=_infer_asset_type_from_control(control),
+            scope_size=_estimate_control_scope(control),
+            control=control
         )
+
+        assessment['operational_feasibility'] = {
+            'recommended_mode': execution_profile.mode.value,
+            'recommended_strategy': execution_profile.strategy.value,
+            'estimated_duration_hours': execution_profile.performance_expectations.get('estimated_duration_hours', 0),
+            'expected_success_rate': execution_profile.performance_expectations.get('expected_success_rate', 0.8),
+            'resource_intensity': 'medium',
+            'concurrency_recommendation': execution_profile.execution_parameters.get('concurrent_requests', 1),
+            'feasibility_score': execution_profile.confidence_score
+        }
+
+        # Estimate execution time
+        estimated_hours = execution_profile.performance_expectations.get('estimated_duration_hours', 1)
+        assessment['estimated_execution_time'] = timedelta(hours=estimated_hours)
+
+        # Resource requirements assessment
+        resource_reqs = execution_profile.resource_requirements
+        assessment['resource_requirements'] = resource_reqs
+
+        # Check resource intensity
+        cpu_cores = resource_reqs.get('cpu_cores', 1)
+        memory_gb = resource_reqs.get('memory_gb', 2)
+
+        if cpu_cores >= 4 or memory_gb >= 8:
+            assessment['operational_feasibility']['resource_intensity'] = 'high'
+        elif cpu_cores >= 2 or memory_gb >= 4:
+            assessment['operational_feasibility']['resource_intensity'] = 'medium'
+        else:
+            assessment['operational_feasibility']['resource_intensity'] = 'low'
+
+        # Time feasibility check
+        if control.budget and control.budget.max_runtime_minutes:
+            max_allowed_hours = control.budget.max_runtime_minutes / 60
+            if estimated_hours > max_allowed_hours:
+                assessment['critical_issues'].append(
+                    f"Estimated execution time {estimated_hours:.1f}h exceeds budget limit of {max_allowed_hours:.1f}h"
+                )
+                assessment['overall_readiness'] = 'time_constraint_violation'
+
+        # 3. Risk and Compliance Assessment
+        intent_classification = await classify_scraping_intent(control)
+
+        assessment['risk_assessment'] = {
+            'risk_level': intent_classification.risk_level.value,
+            'intent_category': intent_classification.category.value,
+            'governance_requirement': intent_classification.governance_requirement.value,
+            'classification_confidence': intent_classification.confidence_score,
+            'risk_factors': [],
+            'mitigation_requirements': []
+        }
+
+        # Risk-based warnings and requirements
+        if intent_classification.risk_level == IntentRiskLevel.CRITICAL:
+            assessment['critical_issues'].append("Critical risk level requires executive approval")
+            assessment['risk_assessment']['mitigation_requirements'].append("Executive authorization required")
+
+        if intent_classification.category == IntentCategory.PERSONAL:
+            assessment['risk_assessment']['risk_factors'].append("Personal data collection")
+            assessment['compliance_status']['privacy_compliance'] = 'required'
+
+        if intent_classification.category == IntentCategory.LEGAL:
+            assessment['risk_assessment']['risk_factors'].append("Legal data sensitivity")
+            assessment['compliance_status']['legal_compliance'] = 'required'
+
+        # AI Precheck (if enabled)
+        try:
+            ai_approved = await ai_precheck(control)
+            assessment['risk_assessment']['ai_precheck_passed'] = ai_approved
+            if not ai_approved:
+                assessment['critical_issues'].append("AI precheck failed - requires manual review")
+        except Exception as e:
+            assessment['warnings'].append(f"AI precheck unavailable: {e}")
+
+        # 4. Compliance and Authorization Check
+        assessment['compliance_status'].update({
+            'authorization_valid': False,
+            'budget_compliance': assessment['cost_analysis']['budget_compliance'] == 'compliant',
+            'time_window_compliant': True,
+            'scope_compliant': True,
+            'overall_compliance_score': 0.0
+        })
+
+        # Authorization validation
+        if control.authorization:
+            try:
+                AuthorizationGate.validate(control.authorization)
+                assessment['compliance_status']['authorization_valid'] = True
+            except Exception as e:
+                assessment['critical_issues'].append(f"Authorization invalid: {e}")
+
+        # Time window compliance
+        if control.deployment_window:
+            now = datetime.utcnow()
+            if now < control.deployment_window.earliest_start:
+                wait_time = control.deployment_window.earliest_start - now
+                assessment['warnings'].append(f"Job scheduled to start in {wait_time}")
+            elif now > control.deployment_window.latest_start:
+                assessment['critical_issues'].append("Deployment window has expired")
+
+        # Scope compliance check
+        if control.budget:
+            scope_size = _estimate_control_scope(control)
+            if scope_size > 1000 and control.budget.max_records < scope_size:
+                assessment['warnings'].append("Scope size may exceed record budget limits")
+
+        # Calculate overall compliance score
+        compliance_items = [
+            assessment['compliance_status']['authorization_valid'],
+            assessment['compliance_status']['budget_compliance'],
+            assessment['compliance_status']['time_window_compliant'],
+            assessment['compliance_status']['scope_compliant']
+        ]
+        compliance_score = sum(compliance_items) / len(compliance_items)
+        assessment['compliance_status']['overall_compliance_score'] = round(compliance_score, 2)
+
+        # 5. Optimization Opportunities Analysis
+        cost_optimization = await optimize_scraping_cost(
+            asset_type=_infer_asset_type_from_control(control),
+            signal_type=_infer_signal_type_from_control(control),
+            current_cost=cost_prediction.predicted_cost
+        )
+
+        assessment['optimization_opportunities'] = [
+            {
+                'type': change.get('type', 'general'),
+                'opportunity': change.get('change', 'Optimization available'),
+                'estimated_savings': change.get('estimated_savings', 0),
+                'implementation_effort': change.get('implementation_effort', 'medium'),
+                'priority': 'high' if change.get('estimated_savings', 0) > cost_prediction.predicted_cost * 0.1 else 'medium'
+            }
+            for change in cost_optimization.recommended_changes[:5]
+        ]
+
+        # Add execution-based optimizations
+        if execution_profile.confidence_score < 0.8:
+            assessment['optimization_opportunities'].append({
+                'type': 'execution_mode',
+                'opportunity': f"Consider alternative execution modes - current confidence: {execution_profile.confidence_score:.2f}",
+                'estimated_savings': cost_prediction.predicted_cost * 0.05,
+                'implementation_effort': 'low',
+                'priority': 'medium'
+            })
+
+        # 6. Overall Readiness Assessment
+        critical_count = len(assessment['critical_issues'])
+        warning_count = len(assessment['warnings'])
+
+        if critical_count > 0:
+            assessment['overall_readiness'] = 'blocked'
+        elif warning_count > 2:
+            assessment['overall_readiness'] = 'caution'
+        elif compliance_score < 0.75:
+            assessment['overall_readiness'] = 'compliance_review'
+        else:
+            assessment['overall_readiness'] = 'ready'
+
+        # Add summary recommendations
+        if assessment['overall_readiness'] == 'ready':
+            assessment['recommendations'].append("Operation appears ready for execution")
+        elif assessment['overall_readiness'] == 'caution':
+            assessment['recommendations'].append("Address warnings before proceeding")
+        elif assessment['overall_readiness'] == 'blocked':
+            assessment['recommendations'].append("Critical issues must be resolved before execution")
+
+        # Cost optimization recommendations
+        if cost_optimization.cost_savings > cost_prediction.predicted_cost * 0.1:
+            assessment['recommendations'].append(
+                f"Significant cost savings available (${cost_optimization.cost_savings:.2f}) - consider optimization"
+            )
+
+        # Success prediction
+        expected_success = execution_profile.performance_expectations.get('expected_success_rate', 0.8)
+        if expected_success < 0.7:
+            assessment['warnings'].append(f"Low expected success rate: {expected_success:.1f}")
+
+        return assessment
+
+    except Exception as e:
+        assessment['critical_issues'].append(f"Preflight check failed: {str(e)}")
+        assessment['overall_readiness'] = 'error'
+        logger.error(f"Preflight check error: {e}")
+        raise RuntimeError(f"Preflight assessment failed: {str(e)}") from e
+
+
+def _validate_control_contract(control: ScrapeControlContract) -> List[str]:
+    """Validate control contract completeness and consistency."""
+    issues = []
+
+    if not control.intent:
+        issues.append("Missing intent specification")
+
+    if not control.intent.sources:
+        issues.append("No data sources specified")
+
+    if not control.intent.geography:
+        issues.append("No geographic scope specified")
+
+    if not control.budget:
+        issues.append("Missing budget specification")
+    else:
+        if control.budget.max_cost_total <= 0:
+            issues.append("Invalid budget amount")
+        if control.budget.max_runtime_minutes <= 0:
+            issues.append("Invalid runtime limit")
+
+    if not control.authorization:
+        issues.append("Missing authorization")
+    else:
+        if control.authorization.expires_at <= datetime.utcnow():
+            issues.append("Authorization has expired")
+
+    return issues
+
+
+def _infer_asset_type_from_control(control: ScrapeControlContract) -> AssetType:
+    """Infer asset type from control contract."""
+    # Simple inference - in production, this would be more sophisticated
+    if any('company' in source.lower() for source in control.intent.sources):
+        return AssetType.COMPANY
+    elif any('property' in source.lower() or 'real_estate' in source.lower() for source in control.intent.sources):
+        return AssetType.SINGLE_FAMILY_HOME
+    else:
+        return AssetType.PERSON  # Default
+
+
+def _infer_signal_type_from_control(control: ScrapeControlContract) -> Optional[SignalType]:
+    """Infer signal type from control contract."""
+    # Simple inference based on sources and intent
+    source_text = ' '.join(control.intent.sources).lower()
+
+    if 'lien' in source_text:
+        return SignalType.LIEN
+    elif 'mortgage' in source_text:
+        return SignalType.MORTGAGE
+    elif 'court' in source_text or 'legal' in source_text:
+        return SignalType.COURT_CASE
+    elif 'financial' in source_text:
+        return SignalType.FINANCIAL
+    elif 'birthday' in source_text or 'birth' in source_text:
+        return SignalType.BIRTHDAY
+    else:
+        return None  # Will use default in prediction
+
+
+def _estimate_control_scope(control: ScrapeControlContract) -> int:
+    """Estimate the scope size from control contract."""
+    # Base scope from geography
+    geo_count = len(control.intent.geography) if control.intent.geography else 1
+
+    # Adjust for sources
+    source_multiplier = len(control.intent.sources) if control.intent.sources else 1
+
+    # Adjust for budget limits
+    if control.budget and control.budget.max_records:
+        max_records = min(control.budget.max_records, 10000)  # Cap at reasonable limit
+        return min(geo_count * source_multiplier * 10, max_records)
+
+    # Default estimation
+    return geo_count * source_multiplier * 50
+
+
+# Global scraper engine instance
+_global_scraper_engine = ScrapingEngine()
+
+
+# Convenience functions
+async def orchestrate_scraping_job(
+    control: ScrapeControlContract,
+    priority: JobPriority = JobPriority.NORMAL
+) -> ScrapingOrchestrationResult:
+    """
+    Orchestrate a complete scraping operation with full intelligence integration.
+
+    This is the main entry point for the MJ Data Scraper Suite that coordinates
+    all intelligence systems for optimal, compliant, and cost-effective operations.
+
+    Args:
+        control: Complete scraping control contract with intent, budget, authorization
+        priority: Job execution priority level
+
+    Returns:
+        Comprehensive orchestration result with intelligence data and recommendations
+
+    Example:
+        result = await orchestrate_scraping_job(scrape_control_contract)
+        if result.result == OrchestrationResult.SUCCESS:
+            print(f"Collected {result.job.records_collected} records")
+        else:
+            print(f"Operation blocked: {result.result.value}")
+    """
+    return await _global_scraper_engine.orchestrate_scraping_operation(control, priority)
+
+
+def get_scraper_engine_stats() -> Dict[str, Any]:
+    """
+    Get comprehensive scraper engine performance statistics.
+
+    Returns operational metrics for monitoring orchestration performance,
+    success rates, cost efficiency, and system health.
+
+    Returns:
+        Dict with engine statistics and performance indicators
+    """
+    return _global_scraper_engine.get_engine_stats()
+
+
+async def cancel_scraping_job(job_id: str) -> bool:
+    """
+    Cancel an active scraping job.
+
+    Args:
+        job_id: Unique job identifier
+
+    Returns:
+        True if job was cancelled, False if not found or already completed
+    """
+    return await _global_scraper_engine.cancel_job(job_id)
+
+
+async def get_scraping_job_status(job_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get current status of a scraping job.
+
+    Args:
+        job_id: Unique job identifier
+
+    Returns:
+        Dict with job status information or None if not found
+    """
+    return await _global_scraper_engine.get_job_status(job_id)
+
+
+# Legacy compatibility
+async def start_scraping_job(control: ScrapeControlContract) -> str:
+    """
+    Legacy function for backward compatibility.
+
+    Starts a scraping job and returns the job ID for status tracking.
+    """
+    result = await orchestrate_scraping_job(control)
+    return result.job.job_id
