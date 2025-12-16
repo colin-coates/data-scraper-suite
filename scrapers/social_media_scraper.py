@@ -13,7 +13,7 @@ No actual scraping implemented - placeholder only.
 import asyncio
 import logging
 from typing import Dict, List, Any
-from scrapers.base_scraper import BaseScraper
+from core.base_scraper import BaseScraper
 
 logger = logging.getLogger(__name__)
 

@@ -28,7 +28,7 @@ from core.control_models import (
     ScraperType
 )
 from core.models.asset_signal import AssetType, SignalType, Asset
-from scrapers.base_scraper import EnhancedBaseScraper as BaseScraper
+from core.base_scraper import BaseScraper
 from core.intent_classifier import (
     classify_scraping_intent,
     IntentClassification,
@@ -57,7 +57,6 @@ from core.mapping.asset_signal_map import (
     calculate_signal_cost_estimate,
     validate_source_for_signal
 )
-from core.base_scraper import ai_precheck
 from core.authorization import AuthorizationGate
 from core.deployment_timer import DeploymentTimer
 from core.cost_governor import CostGovernor
@@ -221,7 +220,6 @@ class ScrapingEngine:
         self.job_timeout_hours = 24
         self.cost_variance_threshold = 0.25  # 25% cost variance allowed
         self.enable_sentinel_monitoring = True
-        self.enable_ai_precheck = True
         self.enable_cost_optimization = True
 
         logger.info("ScrapingEngine initialized with full intelligence integration")
@@ -357,19 +355,6 @@ class ScrapingEngine:
             return
 
         try:
-            # Run AI precheck if enabled
-            if self.enable_ai_precheck:
-                ai_approved = await ai_precheck(job.control)
-                job.phase_progress['ai_precheck'] = {
-                    'completed_at': datetime.utcnow(),
-                    'approved': ai_approved,
-                    'reasoning': "AI risk assessment completed"
-                }
-
-                if not ai_approved:
-                    logger.warning(f"🚫 AI precheck rejected job {job.job_id}")
-                    job.intent_classification.reasoning.append("AI precheck rejected - requires review")
-
             # Sentinel-based risk assessment
             if self.enable_sentinel_monitoring and job.control.intent.sources:
                 try:
@@ -1163,15 +1148,6 @@ async def preflight_cost_check(control: ScrapeControlContract) -> Dict[str, Any]
         if intent_classification.category == IntentCategory.LEGAL:
             assessment['risk_assessment']['risk_factors'].append("Legal data sensitivity")
             assessment['compliance_status']['legal_compliance'] = 'required'
-
-        # AI Precheck (if enabled)
-        try:
-            ai_approved = await ai_precheck(control)
-            assessment['risk_assessment']['ai_precheck_passed'] = ai_approved
-            if not ai_approved:
-                assessment['critical_issues'].append("AI precheck failed - requires manual review")
-        except Exception as e:
-            assessment['warnings'].append(f"AI precheck unavailable: {e}")
 
         # 4. Compliance and Authorization Check
         assessment['compliance_status'].update({

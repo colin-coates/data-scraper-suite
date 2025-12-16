@@ -54,7 +54,6 @@ from core.control_models import (
     JobPriority,
     ScraperType
 )
-from core.base_scraper import ai_precheck
 from core.mapping.asset_signal_map import (
     get_optimal_sources_for_signal,
     calculate_signal_cost_estimate,
@@ -624,16 +623,6 @@ class IntentClassifier:
 
         # Add execution parameters
         await self._add_execution_parameters(classification, control)
-
-        # Run AI precheck for additional insights
-        try:
-            ai_approved = await ai_precheck(control)
-            if not ai_approved:
-                classification.reasoning.append("AI precheck rejected - requires review")
-                if classification.risk_level != IntentRiskLevel.CRITICAL:
-                    classification.governance_requirement = GovernanceRequirement.CONTROLLED
-        except Exception as e:
-            logger.warning(f"AI precheck enhancement failed: {e}")
 
     async def _add_recommended_sources(self, classification: IntentClassification,
                                      control: ScrapeControlContract):

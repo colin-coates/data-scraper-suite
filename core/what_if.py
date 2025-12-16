@@ -38,7 +38,6 @@ from .mapping.asset_signal_map import (
     validate_source_for_signal
 )
 from .control_models import ScrapeControlContract, ScrapeIntent, ScrapeBudget, ScrapeAuthorization
-from .ai_precheck import ai_precheck
 from ..sentinels.sentinel_orchestrator import run_sentinels
 from .safety_verdict import safety_verdict
 from .scraper_engine import preflight_cost_check
