@@ -345,7 +345,8 @@ def safety_verdict(
                 "operation_paused": True,
                 "enhanced_monitoring": True,
                 "audit_logging": True,
-                "risk_assessment_required": True
+                "risk_assessment_required": True,
+                "human_override_check_required": True
             },
             risk_level="high",
             confidence_score=risk_counts["high"] / total_reports,
@@ -358,6 +359,7 @@ def safety_verdict(
                 "sentinel_coverage": list(sentinel_types),
                 "algorithm": "max_risk_high_human_required",
                 "requires_manual_review": True,
+                "requires_human_override": True,
                 "risk_trends": risk_trends
             },
             workflow_id=workflow_id,
@@ -366,10 +368,11 @@ def safety_verdict(
             compliance_flags=compliance_flags,
             audit_trail=audit_trail,
             recommended_actions=[
-                "schedule_human_review",
-                "prepare_risk_assessment",
-                "implement_additional_controls",
-                "consider_alternative_approach"
+                "obtain_human_override_authorization",
+                "schedule_executive_review",
+                "prepare_detailed_risk_assessment",
+                "implement_compensating_controls",
+                "consider_operation_postponement"
             ],
             risk_trends=risk_trends
         )
