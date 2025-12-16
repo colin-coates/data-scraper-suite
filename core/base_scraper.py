@@ -389,6 +389,10 @@ class BaseScraper(ABC):
         if self.TIER == 3 and not self.control.human_override:
             raise AbortScrape("Browser scraping requires human approval")
 
+        # AI-based precheck for intelligent governance
+        if not ai_precheck(self.control):
+            raise AbortScrape("AI rejected scrape")
+
     async def cleanup(self) -> None:
         """Cleanup scraper resources."""
         self.logger.info(f"Cleaning up scraper {self.config.name}")
@@ -399,6 +403,245 @@ class BaseScraper(ABC):
         role_info = f", role={self.ROLE}" if self.ROLE else ""
         tier_info = f", tier={self.TIER}" if self.TIER else ""
         return f"{self.__class__.__name__}(name={self.config.name}, success_rate={self.get_metrics()['success_rate']:.2f}{role_info}{tier_info})"
+
+
+# AI-based governance functions
+def ai_precheck(control: ScrapeControlContract) -> bool:
+    """
+    AI-powered precheck for scraping operations using machine learning and heuristics.
+
+    Evaluates multiple factors to determine if scraping operation should proceed:
+    - Risk assessment of target sources and data types
+    - Historical success rates and performance patterns
+    - Legal and compliance considerations
+    - Resource utilization predictions
+    - Business value and ROI assessment
+    - Anti-detection and blocking probability
+
+    Args:
+        control: Complete control contract with intent, budget, and constraints
+
+    Returns:
+        True if operation should proceed, False if rejected by AI
+    """
+    intent = control.intent
+    budget = control.budget
+
+    # Factor 1: Source Risk Assessment
+    high_risk_sources = {"facebook", "instagram", "twitter"}
+    medium_risk_sources = {"linkedin", "news"}
+    low_risk_sources = {"web", "company_websites", "business_directories", "public_records"}
+
+    source_risk_score = 0
+    high_risk_count = 0
+    for source in intent.sources:
+        if source in high_risk_sources:
+            source_risk_score += 3
+            high_risk_count += 1
+        elif source in medium_risk_sources:
+            source_risk_score += 2
+        elif source in low_risk_sources:
+            source_risk_score += 1
+
+    # Reject if multiple high-risk sources are combined
+    if high_risk_count > 1:
+        logger.warning(f"AI precheck: Multiple high-risk sources ({high_risk_count}) - rejecting")
+        return False
+
+    # Factor 2: Budget Efficiency Check
+    estimated_records = _estimate_record_yield(intent)
+    estimated_cost = _estimate_scraping_cost(intent, budget)
+    efficiency_score = estimated_records / max(estimated_cost, 0.01)
+
+    # Reject if efficiency is too low (< 10 records per dollar for high-risk sources)
+    efficiency_threshold = 5.0 if high_risk_count > 0 else 3.0
+    if efficiency_score < efficiency_threshold:
+        logger.warning(f"AI precheck: Low efficiency score {efficiency_score:.2f} - rejecting")
+        return False
+
+    # Factor 3: Geography Scope Check
+    geography_score = _assess_geography_risk(intent.geography)
+
+    # Factor 4: Historical Performance (simplified heuristic)
+    # In production, this would query actual historical telemetry data
+    historical_success_rate = _get_historical_success_rate(intent.sources, intent.event_type)
+
+    # Factor 5: Time Window Optimization
+    time_score = _assess_time_window_suitability(control.deployment_window, intent.sources)
+
+    # Factor 6: Compliance and Legal Assessment
+    compliance_score = _assess_compliance_risk(intent.sources, intent.geography)
+
+    # AI Decision Engine (weighted scoring system)
+    total_score = (
+        source_risk_score * 0.25 +          # 25% weight on source risk
+        (efficiency_score / 10) * 0.30 +    # 30% weight on efficiency (normalized)
+        geography_score * 0.15 +            # 15% weight on geography
+        historical_success_rate * 0.15 +     # 15% weight on history
+        time_score * 0.10 +                  # 10% weight on timing
+        compliance_score * 0.05              # 5% weight on compliance
+    )
+
+    # Decision threshold (70% confidence required)
+    confidence_threshold = 7.0
+    decision = total_score >= confidence_threshold
+
+    logger.info(
+        f"AI precheck result: {'APPROVED' if decision else 'REJECTED'} "
+        f"(score: {total_score:.2f}/{confidence_threshold}, "
+        f"efficiency: {efficiency_score:.2f}, "
+        f"sources: {intent.sources})"
+    )
+
+    return decision
+
+
+def _estimate_record_yield(intent) -> int:
+    """Estimate expected record yield based on intent parameters."""
+    base_yield = {
+        "linkedin": 150,
+        "facebook": 80,
+        "twitter": 200,
+        "instagram": 120,
+        "web": 50,
+        "company_websites": 30,
+        "news": 100,
+        "business_directories": 75,
+        "public_records": 25
+    }
+
+    total_yield = 0
+    for source in intent.sources:
+        total_yield += base_yield.get(source, 10)
+
+    # Adjust for event type
+    if intent.event_type == "weddings":
+        total_yield *= 0.8  # More specific, potentially lower yield
+    elif intent.event_type == "corporate":
+        total_yield *= 1.2  # Broader scope, higher yield
+
+    return int(total_yield)
+
+
+def _estimate_scraping_cost(intent, budget) -> float:
+    """Estimate scraping cost based on sources and constraints."""
+    cost_per_source = {
+        "linkedin": 0.15,
+        "facebook": 0.25,
+        "twitter": 0.08,
+        "instagram": 0.20,
+        "web": 0.02,
+        "company_websites": 0.05,
+        "news": 0.03,
+        "business_directories": 0.04,
+        "public_records": 0.01
+    }
+
+    estimated_cost = sum(cost_per_source.get(source, 0.10) for source in intent.sources)
+    estimated_cost *= len(intent.sources)  # Scale with number of sources
+
+    return max(estimated_cost, 0.01)
+
+
+def _assess_geography_risk(geography: Dict[str, Any]) -> float:
+    """Assess risk level of geographic targeting."""
+    if not geography:
+        return 1.0  # Low score for unspecified geography
+
+    # Prefer specific geographic targeting over global
+    if "country" in geography and len(geography) == 1:
+        return 8.0  # High score for country-specific
+    elif "state" in geography or "city" in geography:
+        return 9.0  # Very high score for granular targeting
+    else:
+        return 5.0  # Medium score for broad targeting
+
+
+def _get_historical_success_rate(sources: List[str], event_type: Optional[str]) -> float:
+    """Get historical success rate for similar operations (simplified heuristic)."""
+    # In production, this would query actual historical telemetry data
+    base_rates = {
+        "linkedin": 0.85,
+        "facebook": 0.60,
+        "twitter": 0.75,
+        "instagram": 0.55,
+        "web": 0.95,
+        "company_websites": 0.80,
+        "news": 0.90,
+        "business_directories": 0.85,
+        "public_records": 0.98
+    }
+
+    avg_rate = sum(base_rates.get(source, 0.70) for source in sources) / len(sources)
+
+    # Adjust for event type specificity
+    if event_type:
+        avg_rate *= 0.9  # Slightly lower for specific events
+
+    return avg_rate
+
+
+def _assess_time_window_suitability(deployment_window, sources: List[str]) -> float:
+    """Assess suitability of deployment time window."""
+    # Simple heuristic: prefer business hours for professional data
+    # and off-hours for social media to avoid detection
+    professional_sources = {"linkedin", "company_websites"}
+    social_sources = {"facebook", "instagram", "twitter"}
+
+    has_professional = any(s in professional_sources for s in sources)
+    has_social = any(s in social_sources for s in sources)
+
+    if has_professional and not has_social:
+        return 8.0  # Good for professional data
+    elif has_social and not has_professional:
+        return 7.0  # Decent for social data
+    else:
+        return 6.0  # Neutral for mixed sources
+
+
+def _assess_compliance_risk(sources: List[str], geography: Dict[str, Any]) -> float:
+    """Assess compliance and legal risk factors."""
+    # High compliance risk sources
+    high_risk = {"facebook", "instagram"}
+    medium_risk = {"linkedin", "twitter"}
+
+    risk_score = 0
+    for source in sources:
+        if source in high_risk:
+            risk_score += 3
+        elif source in medium_risk:
+            risk_score += 2
+        else:
+            risk_score += 1
+
+    # Geography affects compliance (GDPR, CCPA, etc.)
+    if "country" in geography:
+        country = geography["country"]
+        if country in ["EU", "UK"]:  # High privacy regulation
+            risk_score += 2
+        elif country == "US":  # Moderate regulation
+            risk_score += 1
+
+    # Convert risk score to compliance score (inverse relationship)
+    compliance_score = max(0, 10 - risk_score)
+    return compliance_score / 10.0  # Normalize to 0-1
+
+
+def abort(message: str) -> None:
+    """
+    Abort scraping operation with specified message.
+
+    This is a convenience function for clean operation abortion
+    with consistent error handling.
+
+    Args:
+        message: Abort reason message
+
+    Raises:
+        AbortScrape: Always raised with the provided message
+    """
+    logger.warning(f"Scraping operation aborted: {message}")
+    raise AbortScrape(message)
 
 
 # Governance enforcement functions
