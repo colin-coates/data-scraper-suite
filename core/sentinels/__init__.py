@@ -11,7 +11,9 @@ Sentinels continuously monitor system health, performance, and compliance metric
 """
 
 from .base import (
-    SentinelBase,
+    BaseSentinel,
+    SentinelReport,
+    SentinelRunner,
     SentinelConfig,
     SentinelAlert,
     SentinelSeverity,
@@ -25,7 +27,9 @@ from .base import (
 )
 
 __all__ = [
-    'SentinelBase',
+    'BaseSentinel',
+    'SentinelReport',
+    'SentinelRunner',
     'SentinelConfig',
     'SentinelAlert',
     'SentinelSeverity',
