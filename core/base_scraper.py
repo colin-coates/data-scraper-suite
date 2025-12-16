@@ -385,6 +385,10 @@ class BaseScraper(ABC):
         if self.control.intent.event_type and self.control.intent.event_type not in self.SUPPORTED_EVENTS:
             raise AbortScrape(f"Unsupported event type: {self.control.intent.event_type}. Supported: {self.SUPPORTED_EVENTS}")
 
+        # Tier 3 human approval requirement
+        if self.TIER == 3 and not self.control.human_override:
+            raise AbortScrape("Browser scraping requires human approval")
+
     async def cleanup(self) -> None:
         """Cleanup scraper resources."""
         self.logger.info(f"Cleaning up scraper {self.config.name}")

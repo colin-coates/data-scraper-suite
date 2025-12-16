@@ -122,6 +122,7 @@ class ScrapeControlContract:
     tempo: ScrapeTempo = ScrapeTempo.HUMAN
     deployment_window: Optional[DeploymentWindow] = None
     authorization: Optional[ScrapeAuthorization] = None
+    human_override: bool = False  # Allows bypassing Tier 3 human approval requirement
 
     def __post_init__(self):
         """Validate contract components."""
