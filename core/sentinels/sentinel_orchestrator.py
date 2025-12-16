@@ -684,3 +684,68 @@ def create_performance_orchestrator() -> SentinelOrchestrator:
     orchestrator.register_sentinel("network", create_network_sentinel())
 
     return orchestrator
+
+
+# Simplified interface functions for easy integration
+async def run_sentinels(target: Dict[str, Any], sentinels_to_run: Optional[List[str]] = None) -> List[SentinelReport]:
+    """
+    Simplified sentinel execution function for easy integration.
+
+    This provides a simple interface for running sentinels without needing
+    to manage orchestrator lifecycle.
+
+    Args:
+        target: Target information for sentinel analysis (e.g., {"domain": "example.com"})
+        sentinels_to_run: Optional list of specific sentinels to run.
+                          If None, runs all available sentinels.
+
+    Returns:
+        List of sentinel reports from the analysis
+
+    Example:
+        reports = await run_sentinels({"domain": "linkedin.com"})
+        reports = await run_sentinels({"urls": ["https://example.com"]}, ["network", "waf"])
+    """
+    orchestrator = create_comprehensive_orchestrator()
+
+    try:
+        # Enhance target with additional context for sentinels
+        enhanced_target = _enhance_target_for_sentinels(target)
+
+        result = await orchestrator.orchestrate(
+            target=enhanced_target,
+            sentinels_to_run=sentinels_to_run or ["network", "waf", "malware"]
+        )
+
+        logger.info(f"Sentinel analysis completed: {len(result.individual_reports)} reports generated")
+        return result.individual_reports
+
+    except Exception as e:
+        logger.error(f"Sentinel orchestration failed: {e}")
+        # Return empty list on failure to allow graceful degradation
+        return []
+    finally:
+        # Orchestrator doesn't need explicit cleanup
+        pass
+
+
+def _enhance_target_for_sentinels(target: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enhance target information for better sentinel analysis.
+
+    Converts simple target formats into rich analysis targets.
+    """
+    enhanced = dict(target)  # Copy original
+
+    # Extract URLs and domains if not already present
+    if "domain" in target and "urls" not in target:
+        enhanced["urls"] = [f"https://{target['domain']}"]
+        enhanced["domains"] = [target["domain"]]
+
+    # Add default analysis flags
+    enhanced.setdefault("check_ssl", True)
+    enhanced.setdefault("check_waf", True)
+    enhanced.setdefault("check_malware", True)
+    enhanced.setdefault("check_performance", False)  # Performance checks are more resource intensive
+
+    return enhanced
