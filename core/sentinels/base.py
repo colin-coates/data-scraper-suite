@@ -15,10 +15,11 @@ import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, Any, Optional, Union, Callable
+from typing import Dict, Any, Optional, Union, Callable, List
 from collections import defaultdict, deque
+from dataclasses import dataclass, field
 
 try:
     from pydantic import BaseModel
@@ -34,8 +35,63 @@ except ImportError:
 
 from ..scrape_telemetry import get_global_telemetry_collector, emit_telemetry
 from ..retry_utils import retry_async, RetryConfig, retry_on_network_errors
+from ..control_models import DeploymentWindow
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SentinelAuditEntry:
+    """Audit entry for sentinel probe operations."""
+    sentinel_name: str
+    target: Dict[str, Any]
+    probe_time: datetime
+    result: SentinelReport
+    execution_context: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "sentinel_name": self.sentinel_name,
+            "target": self.target,
+            "probe_time": self.probe_time.isoformat(),
+            "result": self.result.dict(),
+            "execution_context": self.execution_context
+        }
+
+
+@dataclass
+class SentinelMetrics:
+    """Comprehensive metrics for sentinel operations."""
+    probes_attempted: int = 0
+    probes_succeeded: int = 0
+    probes_failed: int = 0
+    total_response_time: float = 0.0
+    risk_distribution: Dict[str, int] = field(default_factory=lambda: {"low": 0, "medium": 0, "high": 0, "critical": 0})
+    action_distribution: Dict[str, int] = field(default_factory=lambda: {"allow": 0, "delay": 0, "restrict": 0, "block": 0})
+
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate."""
+        total = self.probes_succeeded + self.probes_failed
+        return self.probes_succeeded / max(1, total)
+
+    @property
+    def average_response_time(self) -> float:
+        """Calculate average response time."""
+        return self.total_response_time / max(1, self.probes_attempted)
+
+    def update_from_report(self, report: SentinelReport) -> None:
+        """Update metrics from a sentinel report."""
+        self.probes_attempted += 1
+        if report.success:
+            self.probes_succeeded += 1
+        else:
+            self.probes_failed += 1
+
+        self.total_response_time += report.response_time
+        self.risk_distribution[report.risk_level] = self.risk_distribution.get(report.risk_level, 0) + 1
+        self.action_distribution[report.recommended_action] = self.action_distribution.get(report.recommended_action, 0) + 1
 
 
 class SentinelReport(BaseModel):
@@ -52,10 +108,10 @@ class SentinelReport(BaseModel):
     success: bool = True  # Whether probe completed successfully
     error_message: Optional[str] = None  # Error details if probe failed
 
-    def emit_telemetry(self) -> None:
+    async def emit_telemetry_async(self) -> None:
         """Emit telemetry data for this sentinel probe."""
         try:
-            emit_telemetry(
+            await emit_telemetry(
                 scraper=self.sentinel_name,
                 role=self.domain,
                 cost_estimate=self.response_time * 0.001,  # Rough cost estimate
@@ -66,26 +122,44 @@ class SentinelReport(BaseModel):
         except Exception as e:
             logger.warning(f"Failed to emit telemetry for sentinel {self.sentinel_name}: {e}")
 
+    def emit_telemetry(self) -> None:
+        """Synchronous wrapper for telemetry emission."""
+        # For synchronous contexts, we create a task to emit telemetry
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is already running, create a task
+                loop.create_task(self.emit_telemetry_async())
+            else:
+                # If no loop is running, run it synchronously
+                loop.run_until_complete(self.emit_telemetry_async())
+        except Exception as e:
+            logger.warning(f"Failed to emit telemetry for sentinel {self.sentinel_name}: {e}")
+
 
 class BaseSentinel(ABC):
-    """Base class for all sentinels in the MJ Data Scraper Suite."""
+    """Base class for all sentinels in the MJ Data Scraper Suite with enterprise features."""
 
     name: str
 
     def __init__(self):
-        # Metrics tracking (similar to BaseScraper)
-        self.probes_attempted = 0
-        self.probes_successful = 0
-        self.probes_failed = 0
+        # Enhanced metrics tracking (inspired by scraper engine)
+        self.metrics = SentinelMetrics()
         self.start_time = time.time()
         self.last_probe_time = 0.0
+
+        # Audit logging (inspired by authorization module)
+        self.audit_log: List[SentinelAuditEntry] = []
+        self.max_audit_entries = 1000  # Limit audit log size
 
         # Callbacks (similar to BaseScraper)
         self.on_error: Optional[Callable[[Exception, Dict[str, Any]], None]] = None
         self.on_success: Optional[Callable[[SentinelReport], None]] = None
         self.on_retry: Optional[Callable[[int, Exception], None]] = None
+        self.on_audit: Optional[Callable[[SentinelAuditEntry], None]] = None
 
-        # Retry configuration
+        # Retry configuration (enhanced)
         self.retry_config = RetryConfig(
             max_attempts=3,
             base_delay=1.0,
@@ -94,6 +168,10 @@ class BaseSentinel(ABC):
             retry_on_exceptions=(ConnectionError, TimeoutError, OSError, asyncio.TimeoutError),
             retry_on_status_codes=(429, 500, 502, 503, 504)
         )
+
+        # Time-based execution controls (inspired by deployment timer)
+        self.execution_window: Optional[DeploymentWindow] = None
+        self.timezone_aware = True
 
     @abstractmethod
     async def probe(self, target: Dict[str, Any]) -> SentinelReport:
@@ -110,7 +188,7 @@ class BaseSentinel(ABC):
 
     async def probe_with_retry(self, target: Dict[str, Any]) -> SentinelReport:
         """
-        Probe with automatic retry logic and comprehensive error handling.
+        Probe with automatic retry logic, time-based controls, and comprehensive audit logging.
 
         Args:
             target: Target information to probe
@@ -122,20 +200,27 @@ class BaseSentinel(ABC):
         start_time = time.time()
         retry_count = 0
 
-        # Implement simple retry logic
+        # Check execution window (inspired by deployment timer)
+        if self.execution_window:
+            current_time = datetime.utcnow()
+            if not self.execution_window.is_within_window(current_time):
+                logger.warning(f"Sentinel {self.name} execution outside allowed window")
+                # Could delay until window opens, but for now just log
+
+        # Implement retry logic with enhanced error handling
         max_attempts = self.retry_config.max_attempts
         base_delay = self.retry_config.base_delay
 
         for attempt in range(max_attempts):
             try:
-                self.probes_attempted += 1
+                self.metrics.probes_attempted += 1
                 self.last_probe_time = start_time
 
                 # Execute the probe
                 report = await self.probe(target)
 
                 # Update metrics
-                self.probes_successful += 1
+                self.metrics.probes_succeeded += 1
                 response_time = time.time() - start_time
 
                 # Enhance report with additional metadata
@@ -143,6 +228,27 @@ class BaseSentinel(ABC):
                 report.response_time = response_time
                 report.retry_count = retry_count
                 report.success = True
+
+                # Update metrics from successful report
+                self.metrics.update_from_report(report)
+
+                # Create audit entry (inspired by authorization module)
+                audit_entry = SentinelAuditEntry(
+                    sentinel_name=self.name,
+                    target=target,
+                    probe_time=datetime.utcnow(),
+                    result=report,
+                    execution_context={
+                        "attempt": attempt + 1,
+                        "response_time": response_time,
+                        "retry_count": retry_count
+                    }
+                )
+
+                # Add to audit log with size limit
+                self.audit_log.append(audit_entry)
+                if len(self.audit_log) > self.max_audit_entries:
+                    self.audit_log.pop(0)  # Remove oldest
 
                 # Emit telemetry
                 report.emit_telemetry()
@@ -153,6 +259,13 @@ class BaseSentinel(ABC):
                         self.on_success(report)
                     except Exception as e:
                         logger.warning(f"Success callback failed for sentinel {self.name}: {e}")
+
+                # Call audit callback
+                if self.on_audit:
+                    try:
+                        self.on_audit(audit_entry)
+                    except Exception as e:
+                        logger.warning(f"Audit callback failed for sentinel {self.name}: {e}")
 
                 return report
 
@@ -176,18 +289,11 @@ class BaseSentinel(ABC):
                     continue
                 else:
                     # Final failure
-                    self.probes_failed += 1
+                    self.metrics.probes_failed += 1
                     logger.error(f"Sentinel {self.name} probe failed after {attempt + 1} attempts for target {target}: {e}")
 
-                    # Call error callback
-                    if self.on_error:
-                        try:
-                            self.on_error(e, target)
-                        except Exception as callback_error:
-                            logger.warning(f"Error callback failed for sentinel {self.name}: {callback_error}")
-
-                    # Return error report
-                    return SentinelReport(
+                    # Create error report
+                    error_report = SentinelReport(
                         sentinel_name=self.name,
                         domain="error",
                         timestamp=datetime.utcnow(),
@@ -201,10 +307,72 @@ class BaseSentinel(ABC):
                         error_message=str(e)
                     )
 
+                    # Create audit entry for failed probe
+                    audit_entry = SentinelAuditEntry(
+                        sentinel_name=self.name,
+                        target=target,
+                        probe_time=datetime.utcnow(),
+                        result=error_report,
+                        execution_context={
+                            "attempt": attempt + 1,
+                            "response_time": response_time,
+                            "retry_count": retry_count,
+                            "final_error": str(e)
+                        }
+                    )
+
+                    # Add to audit log
+                    self.audit_log.append(audit_entry)
+                    if len(self.audit_log) > self.max_audit_entries:
+                        self.audit_log.pop(0)
+
+                    # Call error callback
+                    if self.on_error:
+                        try:
+                            self.on_error(e, target)
+                        except Exception as callback_error:
+                            logger.warning(f"Error callback failed for sentinel {self.name}: {callback_error}")
+
+                    # Call audit callback for failed probes too
+                    if self.on_audit:
+                        try:
+                            self.on_audit(audit_entry)
+                        except Exception as audit_error:
+                            logger.warning(f"Audit callback failed for sentinel {self.name}: {audit_error}")
+
+                    return error_report
+
     def _should_retry(self, exception: Exception) -> bool:
         """Determine if an exception should trigger a retry."""
         exception_types = tuple(self.retry_config.retry_on_exceptions)
         return isinstance(exception, exception_types)
+
+    def set_execution_window(self, window: DeploymentWindow) -> None:
+        """Set execution window for time-based controls."""
+        self.execution_window = window
+        logger.info(f"Execution window set for sentinel {self.name}")
+
+    def clear_execution_window(self) -> None:
+        """Clear execution window restrictions."""
+        self.execution_window = None
+        logger.info(f"Execution window cleared for sentinel {self.name}")
+
+    def get_audit_log(self, limit: Optional[int] = None) -> List[SentinelAuditEntry]:
+        """Get audit log entries."""
+        if limit:
+            return self.audit_log[-limit:]
+        return self.audit_log.copy()
+
+    def clear_audit_log(self) -> None:
+        """Clear the audit log."""
+        self.audit_log.clear()
+        logger.info(f"Audit log cleared for sentinel {self.name}")
+
+    def reset_metrics(self) -> None:
+        """Reset sentinel metrics."""
+        self.metrics = SentinelMetrics()
+        self.start_time = time.time()
+        logger.info(f"Metrics reset for sentinel {self.name}")
 
     async def probe_with_fallback(self, target: Dict[str, Any]) -> SentinelReport:
         """
@@ -214,24 +382,38 @@ class BaseSentinel(ABC):
         return await self.probe_with_retry(target)
 
     def get_sentinel_info(self) -> Dict[str, Any]:
-        """Get comprehensive information about this sentinel."""
+        """Get comprehensive information about this sentinel (enhanced with enterprise features)."""
         uptime = time.time() - self.start_time
         return {
             "name": self.name,
             "type": self.__class__.__name__,
             "module": self.__class__.__module__,
             "metrics": {
-                "probes_attempted": self.probes_attempted,
-                "probes_successful": self.probes_successful,
-                "probes_failed": self.probes_failed,
-                "success_rate": (self.probes_successful / self.probes_attempted) if self.probes_attempted > 0 else 0.0,
+                "probes_attempted": self.metrics.probes_attempted,
+                "probes_succeeded": self.metrics.probes_succeeded,
+                "probes_failed": self.metrics.probes_failed,
+                "success_rate": self.metrics.success_rate,
+                "average_response_time": self.metrics.average_response_time,
+                "risk_distribution": self.metrics.risk_distribution,
+                "action_distribution": self.metrics.action_distribution,
                 "uptime_seconds": uptime,
                 "last_probe_time": self.last_probe_time
             },
-            "retry_config": {
-                "max_attempts": self.retry_config.max_attempts,
-                "base_delay": self.retry_config.base_delay,
-                "max_delay": self.retry_config.max_delay
+            "audit": {
+                "total_entries": len(self.audit_log),
+                "max_entries": self.max_audit_entries,
+                "recent_entries": [entry.to_dict() for entry in self.audit_log[-5:]]  # Last 5 entries
+            },
+            "configuration": {
+                "retry_config": {
+                    "max_attempts": self.retry_config.max_attempts,
+                    "base_delay": self.retry_config.base_delay,
+                    "max_delay": self.retry_config.max_delay,
+                    "exceptions": [e.__name__ for e in self.retry_config.retry_on_exceptions],
+                    "status_codes": list(self.retry_config.retry_on_status_codes)
+                },
+                "execution_window": self.execution_window.dict() if self.execution_window else None,
+                "timezone_aware": self.timezone_aware
             }
         }
 
@@ -342,11 +524,16 @@ class SentinelRunner:
         self.alert_history: deque[SentinelAlert] = deque(maxlen=1000)
         self.last_report: Optional[SentinelReport] = None
 
+        # Enhanced audit logging (inspired by authorization module)
+        self.audit_log: List[SentinelAuditEntry] = []
+        self.max_audit_entries = 500  # Smaller than individual sentinels
+
         # Callbacks
         self.on_alert: Optional[Callable[[SentinelAlert], None]] = None
         self.on_resolve: Optional[Callable[[SentinelAlert], None]] = None
         self.on_status_change: Optional[Callable[[SentinelStatus, SentinelStatus], None]] = None
         self.on_report: Optional[Callable[[SentinelReport], None]] = None
+        self.on_audit: Optional[Callable[[SentinelAuditEntry], None]] = None
 
         # Telemetry integration
         self.telemetry_collector = get_global_telemetry_collector()
@@ -355,7 +542,7 @@ class SentinelRunner:
 
     async def probe_target(self, target: Dict[str, Any]) -> SentinelReport:
         """
-        Execute a probe with retry logic and handle the results.
+        Execute a probe with retry logic, audit logging, and result handling.
 
         Args:
             target: Target to probe
@@ -365,6 +552,30 @@ class SentinelRunner:
         """
         report = await self.sentinel.probe_with_retry(target)
         self.last_report = report
+
+        # Create audit entry for runner-level tracking
+        audit_entry = SentinelAuditEntry(
+            sentinel_name=f"{self.sentinel.name}_runner",
+            target=target,
+            probe_time=datetime.utcnow(),
+            result=report,
+            execution_context={
+                "runner": self.config.name,
+                "status": self.status.value
+            }
+        )
+
+        # Add to runner audit log
+        self.audit_log.append(audit_entry)
+        if len(self.audit_log) > self.max_audit_entries:
+            self.audit_log.pop(0)
+
+        # Call audit callback
+        if self.on_audit:
+            try:
+                self.on_audit(audit_entry)
+            except Exception as e:
+                logger.error(f"Runner audit callback failed for {self.sentinel.name}: {e}")
 
         # Handle report based on risk level and recommended action
         await self._handle_report(report, target)
@@ -512,17 +723,46 @@ class SentinelRunner:
         logger.debug(f"Would send webhook alert: {alert.message}")
 
     def get_metrics(self) -> Dict[str, Any]:
-        """Get sentinel runner metrics."""
+        """Get comprehensive sentinel runner metrics."""
         return {
             "sentinel_name": self.sentinel.name,
             "sentinel_type": self.sentinel.__class__.__name__,
             "status": self.status.value,
             "active_alerts": len(self.active_alerts),
             "total_alerts": len(self.alert_history),
+            "audit_entries": len(self.audit_log),
             "last_check_time": self.last_check_time,
             "last_alert_time": self.last_alert_time,
-            "last_report": self.last_report.dict() if self.last_report else None
+            "last_report": self.last_report.dict() if self.last_report else None,
+            # Include sentinel metrics
+            "sentinel_metrics": self.sentinel.get_sentinel_info()["metrics"]
         }
+
+    def get_audit_log(self, limit: Optional[int] = None) -> List[SentinelAuditEntry]:
+        """Get runner audit log entries."""
+        if limit:
+            return self.audit_log[-limit:]
+        return self.audit_log.copy()
+
+    def clear_audit_log(self) -> None:
+        """Clear the runner audit log."""
+        self.audit_log.clear()
+        logger.info(f"Runner audit log cleared for {self.sentinel.name}")
+
+    def reset_metrics(self) -> None:
+        """Reset runner metrics and underlying sentinel metrics."""
+        self.active_alerts.clear()
+        self.alert_history.clear()
+        self.audit_log.clear()
+        self.last_check_time = 0.0
+        self.last_alert_time = 0.0
+        self.last_report = None
+        self.consecutive_failures = 0
+
+        # Reset underlying sentinel metrics
+        self.sentinel.reset_metrics()
+
+        logger.info(f"Runner metrics reset for {self.sentinel.name}")
 
     def get_active_alerts(self) -> List[SentinelAlert]:
         """Get list of currently active alerts."""

@@ -91,11 +91,16 @@ class SentinelOrchestrator:
         self.sentinels: Dict[str, SentinelRunner] = {}
         self.sentinel_configs: Dict[str, SentinelConfig] = {}
 
-        # Execution tracking
+        # Enhanced execution tracking (inspired by scraper engine)
         self.orchestrations_attempted = 0
         self.orchestrations_successful = 0
         self.orchestrations_failed = 0
+        self.total_execution_time = 0.0
         self.start_time = time.time()
+
+        # Audit logging (inspired by authorization module)
+        self.audit_log: List[Dict[str, Any]] = []
+        self.max_audit_entries = 1000
 
         # Configuration
         self.max_concurrent_sentinels = 5
@@ -192,7 +197,7 @@ class SentinelOrchestrator:
                 sentinels_to_run = [s for s in sentinels_to_run if s in self.sentinels]
 
             if not sentinels_to_run:
-                return OrchestrationResult(
+                error_result = OrchestrationResult(
                     orchestration_id=orchestration_id,
                     timestamp=datetime.utcnow(),
                     target=target,
@@ -203,6 +208,10 @@ class SentinelOrchestrator:
                     success=False,
                     error_message="No sentinels available to run"
                 )
+
+                # Add to audit log
+                self._add_audit_entry(orchestration_id, target, sentinels_to_run, error_result)
+                return error_result
 
             # Execute sentinels based on mode
             if self.mode == OrchestrationMode.PARALLEL:
@@ -219,7 +228,13 @@ class SentinelOrchestrator:
                 orchestration_id, target, sentinels_to_run, reports, start_time
             )
 
+            # Update metrics
             self.orchestrations_successful += 1
+            self.total_execution_time += aggregated_result.execution_time
+
+            # Add to audit log
+            self._add_audit_entry(orchestration_id, target, sentinels_to_run, aggregated_result)
+
             return aggregated_result
 
         except Exception as e:
@@ -228,7 +243,7 @@ class SentinelOrchestrator:
 
             logger.error(f"Orchestration {orchestration_id} failed: {e}")
 
-            return OrchestrationResult(
+            error_result = OrchestrationResult(
                 orchestration_id=orchestration_id,
                 timestamp=datetime.utcnow(),
                 target=target,
@@ -239,6 +254,11 @@ class SentinelOrchestrator:
                 success=False,
                 error_message=str(e)
             )
+
+            # Add to audit log
+            self._add_audit_entry(orchestration_id, target, sentinels_to_run or [], error_result)
+
+            return error_result
 
     async def _execute_parallel(self, target: Dict[str, Any],
                                sentinels: List[str]) -> List[SentinelReport]:
@@ -509,7 +529,7 @@ class SentinelOrchestrator:
         return self._aggregate_conservative(reports)
 
     def get_orchestrator_info(self) -> Dict[str, Any]:
-        """Get comprehensive information about the orchestrator."""
+        """Get comprehensive information about the orchestrator (enhanced with enterprise features)."""
         uptime = time.time() - self.start_time
 
         sentinel_info = {}
@@ -527,7 +547,14 @@ class SentinelOrchestrator:
                 "orchestrations_failed": self.orchestrations_failed,
                 "success_rate": (self.orchestrations_successful / self.orchestrations_attempted)
                                if self.orchestrations_attempted > 0 else 0.0,
+                "average_execution_time": (self.total_execution_time / self.orchestrations_attempted)
+                                        if self.orchestrations_attempted > 0 else 0.0,
                 "uptime_seconds": uptime
+            },
+            "audit": {
+                "total_entries": len(self.audit_log),
+                "max_entries": self.max_audit_entries,
+                "recent_entries": self.audit_log[-5:] if self.audit_log else []
             },
             "configuration": {
                 "max_concurrent_sentinels": self.max_concurrent_sentinels,
@@ -536,6 +563,37 @@ class SentinelOrchestrator:
             },
             "sentinel_details": sentinel_info
         }
+
+    def _add_audit_entry(self, orchestration_id: str, target: Dict[str, Any],
+                        sentinels_executed: List[str], result: OrchestrationResult) -> None:
+        """Add an entry to the audit log."""
+        audit_entry = {
+            "orchestration_id": orchestration_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "target": target,
+            "sentinels_executed": sentinels_executed,
+            "result": result.to_dict(),
+            "execution_context": {
+                "mode": self.mode.value,
+                "strategy": self.strategy.value,
+                "success": result.success
+            }
+        }
+
+        self.audit_log.append(audit_entry)
+        if len(self.audit_log) > self.max_audit_entries:
+            self.audit_log.pop(0)  # Remove oldest
+
+    def get_audit_log(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get audit log entries."""
+        if limit:
+            return self.audit_log[-limit:]
+        return self.audit_log.copy()
+
+    def clear_audit_log(self) -> None:
+        """Clear the audit log."""
+        self.audit_log.clear()
+        logger.info("Orchestrator audit log cleared")
 
     def set_mode(self, mode: OrchestrationMode) -> None:
         """Set the orchestration execution mode."""
