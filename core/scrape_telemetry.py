@@ -14,11 +14,26 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
-# Using dataclasses for compatibility
+# Import comprehensive telemetry models
+from .telemetry.models import (
+    TelemetryEvent,
+    ScraperOperationEvent,
+    SentinelCheckEvent,
+    SafetyVerdictEvent,
+    ConstraintApplicationEvent,
+    ErrorEvent,
+    PerformanceMetricEvent,
+    TelemetrySeverity,
+    create_scraper_operation_event,
+    create_sentinel_check_event,
+    create_safety_verdict_event,
+    create_error_event,
+    create_performance_metric_event
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,21 +138,34 @@ class TelemetryMetrics:
 
 class ScrapeTelemetryCollector:
     """
-    Collector for scrape telemetry data.
+    Enhanced collector for comprehensive telemetry data.
 
-    Handles collection, storage, aggregation, and analysis of telemetry data.
-    Provides real-time metrics and historical analysis.
+    Handles collection, storage, aggregation, and analysis of telemetry data
+    from multiple sources including scrapers, sentinels, safety verdicts, and more.
+    Provides real-time metrics, historical analysis, and enterprise observability.
     """
 
     def __init__(self, max_history: int = 10000):
+        # Legacy telemetry storage
         self.telemetry_data: deque[ScrapeTelemetry] = deque(maxlen=max_history)
+
+        # Comprehensive event storage
+        self.event_data: deque[TelemetryEvent] = deque(maxlen=max_history)
+
+        # Component-specific storage for better organization
+        self.scraper_events: deque[ScraperOperationEvent] = deque(maxlen=max_history // 4)
+        self.sentinel_events: deque[SentinelCheckEvent] = deque(maxlen=max_history // 4)
+        self.verdict_events: deque[SafetyVerdictEvent] = deque(maxlen=max_history // 4)
+        self.error_events: deque[ErrorEvent] = deque(maxlen=max_history // 4)
+
         self.metrics = TelemetryMetrics()
         self._lock = asyncio.Lock()
+
         logger.info(f"ScrapeTelemetryCollector initialized with max_history={max_history}")
 
     async def record_telemetry(self, telemetry: ScrapeTelemetry) -> None:
         """
-        Record a telemetry data point.
+        Record a legacy telemetry data point.
 
         Args:
             telemetry: Telemetry data to record
@@ -145,7 +173,96 @@ class ScrapeTelemetryCollector:
         async with self._lock:
             self.telemetry_data.append(telemetry)
             self._update_metrics(telemetry)
-            logger.debug(f"Recorded telemetry: {telemetry.source} - {telemetry.records_found} records")
+
+            # Log significant events
+            if telemetry.blocked:
+                logger.warning(f"Blocked scraping operation: {telemetry.scraper_name} - {telemetry.blocked_reason}")
+
+            if telemetry.cost > 1.0:  # Log high-cost operations
+                logger.info(f"High-cost operation: {telemetry.scraper_name} cost=${telemetry.cost:.2f}")
+
+            logger.debug(f"Recorded legacy telemetry: {telemetry.scraper_name} records={telemetry.records_found} cost=${telemetry.cost:.3f}")
+
+    async def record_event(self, event: TelemetryEvent) -> None:
+        """
+        Record a comprehensive telemetry event.
+
+        Args:
+            event: Telemetry event to record
+        """
+        async with self._lock:
+            # Store in general event queue
+            self.event_data.append(event)
+
+            # Route to component-specific queues
+            if isinstance(event, ScraperOperationEvent):
+                self.scraper_events.append(event)
+                # Also update legacy metrics for compatibility
+                self._update_metrics_from_scraper_event(event)
+
+            elif isinstance(event, SentinelCheckEvent):
+                self.sentinel_events.append(event)
+
+            elif isinstance(event, SafetyVerdictEvent):
+                self.verdict_events.append(event)
+
+            elif isinstance(event, ErrorEvent):
+                self.error_events.append(event)
+
+            # Log significant events
+            await self._log_significant_event(event)
+
+            logger.debug(f"Recorded telemetry event: {event.event_type.value} from {event.source_component}")
+
+    def _update_metrics_from_scraper_event(self, event: ScraperOperationEvent) -> None:
+        """Update legacy metrics from new scraper operation events."""
+        # Ensure timestamp is set
+        timestamp = event.timestamp or datetime.utcnow()
+
+        # Create a synthetic ScrapeTelemetry for backward compatibility
+        synthetic_telemetry = ScrapeTelemetry(
+            timestamp=timestamp,
+            source=event.source_component,
+            hour_of_day=timestamp.hour,
+            day_of_week=timestamp.strftime("%A"),
+            cost=event.cost_estimate,
+            records_found=event.records_found,
+            blocked=event.operation_status == "blocked",
+            latency_ms=int(event.processing_time * 1000),
+            scraper_name=event.scraper_type,
+            role=event.scraper_role or "",
+            blocked_reason=event.blocked_reason or ""
+        )
+
+        self._update_metrics(synthetic_telemetry)
+
+    async def _log_significant_event(self, event: TelemetryEvent) -> None:
+        """Log significant telemetry events."""
+        if isinstance(event, ScraperOperationEvent):
+            if event.operation_status == "blocked":
+                logger.warning(f"🚫 Blocked scraper operation: {event.scraper_type} - {event.blocked_reason}")
+            elif event.cost_estimate > 1.0:
+                logger.info(f"💰 High-cost scraper operation: {event.scraper_type} cost=${event.cost_estimate:.2f}")
+
+        elif isinstance(event, SentinelCheckEvent):
+            if event.risk_level == "critical":
+                logger.error(f"🚨 Critical sentinel risk detected: {event.sentinel_name} - {event.critical_findings}")
+            elif event.risk_level == "high":
+                logger.warning(f"⚠️ High sentinel risk detected: {event.sentinel_name}")
+
+        elif isinstance(event, SafetyVerdictEvent):
+            if event.verdict_action == "block":
+                logger.warning(f"🚫 Safety verdict blocked operation: {event.verdict_reason}")
+            elif event.verdict_action == "human_required":
+                logger.info(f"👤 Human approval required: {event.verdict_reason}")
+
+        elif isinstance(event, ErrorEvent):
+            if event.severity == TelemetrySeverity.CRITICAL:
+                logger.critical(f"💥 Critical error: {event.error_type} - {event.error_message}")
+            elif event.severity == TelemetrySeverity.ERROR:
+                logger.error(f"❌ Error: {event.error_type} - {event.error_message}")
+            elif event.severity == TelemetrySeverity.WARNING:
+                logger.warning(f"⚠️ Warning: {event.error_type} - {event.error_message}")
 
     def _update_metrics(self, telemetry: ScrapeTelemetry) -> None:
         """Update aggregated metrics with new telemetry data."""
@@ -290,17 +407,101 @@ class ScrapeTelemetryCollector:
     def clear_data(self) -> None:
         """Clear all telemetry data and reset metrics."""
         self.telemetry_data.clear()
+        self.event_data.clear()
+        self.scraper_events.clear()
+        self.sentinel_events.clear()
+        self.verdict_events.clear()
+        self.error_events.clear()
         self.metrics = TelemetryMetrics()
         logger.info("Telemetry data cleared")
 
+    # Comprehensive telemetry event access methods
+    def get_scraper_events(self, limit: Optional[int] = None) -> List[ScraperOperationEvent]:
+        """Get scraper operation events."""
+        events = list(self.scraper_events)
+        return events[-limit:] if limit else events
 
-# Global telemetry collector instance
+    def get_sentinel_events(self, limit: Optional[int] = None) -> List[SentinelCheckEvent]:
+        """Get sentinel check events."""
+        events = list(self.sentinel_events)
+        return events[-limit:] if limit else events
+
+    def get_verdict_events(self, limit: Optional[int] = None) -> List[SafetyVerdictEvent]:
+        """Get safety verdict events."""
+        events = list(self.verdict_events)
+        return events[-limit:] if limit else events
+
+    def get_error_events(self, limit: Optional[int] = None) -> List[ErrorEvent]:
+        """Get error events."""
+        events = list(self.error_events)
+        return events[-limit:] if limit else events
+
+    def get_events_by_type(self, event_type: str, limit: Optional[int] = None) -> List[TelemetryEvent]:
+        """Get events of a specific type."""
+        matching_events = [e for e in self.event_data if e.event_type.value == event_type]
+        return matching_events[-limit:] if limit else matching_events
+
+    def get_events_in_timeframe(self, start_time: datetime, end_time: Optional[datetime] = None) -> List[TelemetryEvent]:
+        """Get telemetry events within a time range."""
+        end_time = end_time or datetime.utcnow()
+        return [
+            e for e in self.event_data
+            if start_time <= e.timestamp <= end_time
+        ]
+
+    def get_component_health_summary(self) -> Dict[str, Any]:
+        """Get health summary for all telemetry components."""
+        now = datetime.utcnow()
+        last_hour = now - timedelta(hours=1)
+
+        return {
+            "scraper_operations": {
+                "total": len(self.scraper_events),
+                "last_hour": len([e for e in self.scraper_events if e.timestamp >= last_hour]),
+                "blocked_operations": len([e for e in self.scraper_events if e.operation_status == "blocked"]),
+                "high_cost_operations": len([e for e in self.scraper_events if e.cost_estimate > 1.0])
+            },
+            "sentinel_checks": {
+                "total": len(self.sentinel_events),
+                "last_hour": len([e for e in self.sentinel_events if e.timestamp >= last_hour]),
+                "critical_findings": len([e for e in self.sentinel_events if e.risk_level == "critical"]),
+                "high_risk_findings": len([e for e in self.sentinel_events if e.risk_level == "high"])
+            },
+            "safety_verdicts": {
+                "total": len(self.verdict_events),
+                "last_hour": len([e for e in self.verdict_events if e.timestamp >= last_hour]),
+                "blocks_issued": len([e for e in self.verdict_events if e.verdict_action == "block"]),
+                "human_required": len([e for e in self.verdict_events if e.verdict_action == "human_required"])
+            },
+            "error_events": {
+                "total": len(self.error_events),
+                "last_hour": len([e for e in self.error_events if e.timestamp >= last_hour]),
+                "critical_errors": len([e for e in self.error_events if e.severity == TelemetrySeverity.CRITICAL]),
+                "by_component": self._get_error_summary_by_component()
+            }
+        }
+
+    def _get_error_summary_by_component(self) -> Dict[str, int]:
+        """Get error count by component."""
+        component_errors = defaultdict(int)
+        for error in self.error_events:
+            component_errors[error.source_component] += 1
+        return dict(component_errors)
+
+
+# Global telemetry collector instances
 _global_collector = ScrapeTelemetryCollector()
+_global_telemetry_collector = _global_collector  # For backward compatibility
 
 
 def get_global_collector() -> ScrapeTelemetryCollector:
     """Get the global telemetry collector instance."""
     return _global_collector
+
+
+def get_global_telemetry_collector() -> ScrapeTelemetryCollector:
+    """Get the global telemetry collector instance (alias for backward compatibility)."""
+    return _global_telemetry_collector
 
 
 async def record_scrape_telemetry(
@@ -443,26 +644,65 @@ def get_global_telemetry_collector() -> ScrapeTelemetryCollector:
 
 async def emit_telemetry(
     scraper: str,
+    role: str = "",
+    cost_estimate: float = 0.0,
+    records_found: int = 0,
+    blocked_reason: str = "",
+    runtime: float = 0.0,
+    **kwargs
+) -> None:
+    """
+    Enhanced telemetry emission with comprehensive event modeling.
+
+    Creates appropriate telemetry events based on context and records them
+    in the global telemetry collector for analysis and monitoring.
+
+    Args:
+        scraper: Name of the scraper instance or component
+        role: Scraper role or component role
+        cost_estimate: Estimated cost of the operation
+        records_found: Number of records collected/processed
+        blocked_reason: Reason for blocking if applicable
+        runtime: Execution time in seconds
+        **kwargs: Additional context-specific parameters
+    """
+    # Create comprehensive scraper operation event using new models
+    event = create_scraper_operation_event(
+        scraper_type=scraper,
+        scraper_role=role,
+        records_found=records_found,
+        processing_time=runtime,
+        cost_estimate=cost_estimate,
+        operation_status="blocked" if blocked_reason else "success",
+        blocked_reason=blocked_reason if blocked_reason else None,
+        source_component=kwargs.get('source_component', 'scraper_engine'),
+        source_workflow=kwargs.get('workflow_id'),
+        correlation_id=kwargs.get('correlation_id'),
+        metadata=kwargs.get('metadata', {}),
+        tags=kwargs.get('tags', []),
+        **{k: v for k, v in kwargs.items() if k not in [
+            'source_component', 'workflow_id', 'correlation_id',
+            'metadata', 'tags', 'sentinel_name', 'risk_level',
+            'verdict_action', 'error_type', 'metric_name'
+        ]}
+    )
+
+    # Also create legacy ScrapeTelemetry for backward compatibility
+    await _emit_legacy_telemetry(scraper, role, cost_estimate, records_found, blocked_reason, runtime)
+
+    # Record comprehensive event in global collector
+    await _global_telemetry_collector.record_event(event)
+
+
+async def _emit_legacy_telemetry(
+    scraper: str,
     role: str,
     cost_estimate: float,
     records_found: int,
-    blocked_reason: str = "",
-    runtime: float = 0.0
+    blocked_reason: str,
+    runtime: float
 ) -> None:
-    """
-    Emit telemetry data for a scraping operation.
-
-    This function creates a ScrapeTelemetry entry and records it in the global
-    telemetry collector for analysis and monitoring.
-
-    Args:
-        scraper: Name of the scraper instance
-        role: Scraper role (discovery/verification/enrichment/browser)
-        cost_estimate: Estimated cost of the operation
-        records_found: Number of records collected
-        blocked_reason: Reason for blocking if applicable (empty if not blocked)
-        runtime: Execution time in seconds
-    """
+    """Emit legacy ScrapeTelemetry for backward compatibility."""
     # Determine if operation was blocked
     blocked = bool(blocked_reason)
 
@@ -474,7 +714,7 @@ async def emit_telemetry(
     hour_of_day = now.hour
     day_of_week = now.strftime("%A")  # Monday, Tuesday, etc.
 
-    # Create telemetry entry
+    # Create legacy telemetry entry
     telemetry = ScrapeTelemetry(
         timestamp=now,
         source=scraper,
@@ -489,8 +729,80 @@ async def emit_telemetry(
         blocked_reason=blocked_reason
     )
 
-    # Record in global collector
+    # Record legacy telemetry
     await _global_telemetry_collector.record_telemetry(telemetry)
+
+
+# Enhanced telemetry emission functions for different event types
+async def emit_sentinel_telemetry(
+    sentinel_name: str,
+    risk_level: str,
+    recommended_action: str,
+    check_duration: float,
+    **kwargs
+) -> None:
+    """Emit telemetry for sentinel check operations."""
+    event = create_sentinel_check_event(
+        sentinel_name=sentinel_name,
+        risk_level=risk_level,
+        recommended_action=recommended_action,
+        check_duration=check_duration,
+        source_component="sentinel_orchestrator",
+        **kwargs
+    )
+    await _global_telemetry_collector.record_event(event)
+
+
+async def emit_verdict_telemetry(
+    verdict_action: str,
+    verdict_reason: str,
+    risk_level: str,
+    reports_analyzed: int,
+    **kwargs
+) -> None:
+    """Emit telemetry for safety verdict operations."""
+    event = create_safety_verdict_event(
+        verdict_action=verdict_action,
+        verdict_reason=verdict_reason,
+        risk_level=risk_level,
+        reports_analyzed=reports_analyzed,
+        source_component="safety_verdict",
+        **kwargs
+    )
+    await _global_telemetry_collector.record_event(event)
+
+
+async def emit_error_telemetry(
+    error_type: str,
+    error_message: str,
+    severity: TelemetrySeverity = TelemetrySeverity.ERROR,
+    **kwargs
+) -> None:
+    """Emit telemetry for error events."""
+    event = create_error_event(
+        error_type=error_type,
+        error_message=error_message,
+        severity=severity,
+        **kwargs
+    )
+    await _global_telemetry_collector.record_event(event)
+
+
+async def emit_performance_telemetry(
+    metric_name: str,
+    metric_value: Union[int, float],
+    metric_unit: str,
+    **kwargs
+) -> None:
+    """Emit telemetry for performance metrics."""
+    event = create_performance_metric_event(
+        metric_name=metric_name,
+        metric_value=metric_value,
+        metric_unit=metric_unit,
+        source_component=kwargs.get('component_name', 'performance_monitor'),
+        **kwargs
+    )
+    await _global_telemetry_collector.record_event(event)
 
     # Optional: Send to external telemetry services
     send_to_telemetry_service(telemetry)
