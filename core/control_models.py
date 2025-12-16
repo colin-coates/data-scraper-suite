@@ -80,6 +80,8 @@ class ScrapeIntent:
     events: Dict[str, Any]
     demographics: Optional[Dict[str, Any]] = None
     sources: List[str] = field(default_factory=list)
+    allowed_role: Optional[str] = None  # discovery/verification/enrichment/browser
+    event_type: Optional[str] = None     # weddings/corporate/social/professional
 
     def get_target_criteria(self) -> Dict[str, Any]:
         """Get combined targeting criteria."""

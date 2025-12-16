@@ -25,6 +25,11 @@ from .control_models import ScrapeControlContract
 logger = logging.getLogger(__name__)
 
 
+class AbortScrape(Exception):
+    """Exception raised when scraping should be aborted due to governance violations."""
+    pass
+
+
 @dataclass
 class ScraperResult:
     """Standardized result structure for all scrapers."""
@@ -62,6 +67,7 @@ class BaseScraper(ABC):
     # Class attributes for scraper classification
     ROLE = None  # discovery / verification / enrichment / browser
     TIER = None  # 1, 2, 3 (complexity/compliance level)
+    SUPPORTED_EVENTS = []  # List of supported event types (weddings/corporate/social/professional)
 
     def __init__(self, config: ScraperConfig, control: Optional[ScrapeControlContract] = None):
         self.config = config
@@ -316,16 +322,28 @@ class BaseScraper(ABC):
         """
         Enforce governance controls before scraping operations.
 
-        Validates time windows, budget constraints, and scope limitations.
+        Validates time windows, budget constraints, scope limitations,
+        role compatibility, and event type support.
         Should be called before starting scraping operations.
         """
         if not self.control:
             self.logger.warning("No control contract provided - skipping governance enforcement")
             return
 
+        # Core governance checks
         enforce_time(self.control)
         enforce_budget(self.control)
         enforce_scope(self.control)
+
+        # Role and capability validation
+        if self.ROLE and self.control.intent.allowed_role and self.ROLE != self.control.intent.allowed_role:
+            raise AbortScrape(f"Scraper role mismatch: {self.ROLE} != {self.control.intent.allowed_role}")
+
+        if not self.control.intent.geography:
+            raise AbortScrape("Geography required")
+
+        if self.control.intent.event_type and self.control.intent.event_type not in self.SUPPORTED_EVENTS:
+            raise AbortScrape(f"Unsupported event type: {self.control.intent.event_type}. Supported: {self.SUPPORTED_EVENTS}")
 
     async def cleanup(self) -> None:
         """Cleanup scraper resources."""
@@ -400,10 +418,6 @@ def enforce_scope(control: ScrapeControlContract) -> None:
         RuntimeError: If scope constraints are violated
     """
     intent = control.intent
-
-    # Validate geography scope
-    if not intent.geography:
-        raise RuntimeError("No geography scope defined")
 
     # Validate data sources
     if not intent.sources:
