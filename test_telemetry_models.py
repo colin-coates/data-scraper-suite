@@ -18,11 +18,13 @@ from core.telemetry.models import (
     SafetyVerdictEvent,
     ErrorEvent,
     PerformanceMetricEvent,
+    SentinelOutcome,
     create_scraper_operation_event,
     create_sentinel_check_event,
     create_safety_verdict_event,
     create_error_event,
-    create_performance_metric_event
+    create_performance_metric_event,
+    create_sentinel_outcome
 )
 from core.scrape_telemetry import ScrapeTelemetryCollector
 
@@ -350,6 +352,168 @@ class TestEnhancedCollector:
 
         assert len(recent_events) == 2  # sentinel + error
         assert all(e.timestamp >= base_time - timedelta(hours=1) for e in recent_events)
+
+    # Test 12: Enhanced SentinelOutcome Model
+    print("\n📋 Test 12: Enhanced SentinelOutcome Model")
+    try:
+        # Test basic creation
+        outcome = create_sentinel_outcome(
+            domain="example.com",
+            risk_level="high",
+            action="restrict",
+            sentinel_name="network_sentinel",
+            findings={"waf_detected": True, "rate_limiting": True},
+            latency_ms=1250,
+            blocked=False,
+            proxy_pool="premium_pool",
+            risk_score=0.75,
+            confidence_score=0.85,
+            threat_indicators=["suspicious_headers", "honeypot_behavior"],
+            operational_recommendations=["use_rotating_proxies", "implement_human_behavior"],
+            compliance_flags=["gdpr_review_required"],
+            correlation_id="sentinel_test_001"
+        )
+
+        print("✅ Enhanced SentinelOutcome created")
+        print(f"   Domain: {outcome.domain}")
+        print(f"   Risk Level: {outcome.risk_level}")
+        print(f"   Risk Score: {outcome.risk_score}")
+        print(f"   Confidence Score: {outcome.confidence_score}")
+        print(f"   Action: {outcome.action}")
+        print(f"   Findings Count: {outcome.findings_count}")
+        print(f"   Threat Indicators: {len(outcome.threat_indicators)}")
+        print(f"   Operational Recommendations: {len(outcome.operational_recommendations)}")
+        print(f"   Compliance Flags: {outcome.compliance_flags}")
+
+        # Test validation methods
+        assert outcome.get_risk_category() == "high"
+        assert outcome.get_action_priority() == "high"
+        assert not outcome.get_compliance_summary()["compliant"]
+
+        # Test legacy format conversion
+        legacy = outcome.to_legacy_format()
+        assert legacy["domain"] == "example.com"
+        assert legacy["risk_level"] == "high"
+        assert legacy["action"] == "restrict"
+        assert legacy["blocked"] == False
+        assert "waf_detected" in legacy["findings"]
+
+        # Test performance summary
+        perf_summary = outcome.get_performance_summary()
+        assert perf_summary["latency_ms"] == 1250
+        assert perf_summary["efficiency_score"] is None  # Not set
+
+        # Test with critical risk and high impact
+        critical_outcome = create_sentinel_outcome(
+            domain="high-risk-site.com",
+            risk_level="critical",
+            action="block",
+            sentinel_name="malware_sentinel",
+            business_impact_assessment="high",
+            risk_score=0.95,
+            confidence_score=0.92,
+            critical_findings=["malware_signature_detected", "phishing_indicators"],
+            escalation_required=True
+        )
+
+        print("✅ Critical risk outcome created")
+        print(f"   Risk Category: {critical_outcome.get_risk_category()}")
+        print(f"   Action Priority: {critical_outcome.get_action_priority()}")
+        print(f"   Escalation Required: {critical_outcome.escalation_required}")
+        print(f"   Critical Findings: {len(critical_outcome.critical_findings)}")
+
+        assert critical_outcome.get_risk_category() == "critical"
+        assert critical_outcome.get_action_priority() == "urgent"
+        assert critical_outcome.escalation_required == True
+
+        # Test validation (basic range checks)
+        print("✅ Validation tests completed")
+
+        # Test with comprehensive enterprise features
+        enterprise_outcome = create_sentinel_outcome(
+            domain="enterprise-target.com",
+            risk_level="medium",
+            action="delay",
+            sentinel_name="comprehensive_sentinel",
+            # Risk assessment
+            risk_score=0.65,
+            confidence_score=0.78,
+            anomaly_score=0.45,
+            # Network intelligence
+            connectivity_status="stable",
+            dns_resolution_time=0.023,
+            ssl_validity_days=365,
+            response_time_ms=850,
+            # WAF detection
+            waf_detected=True,
+            bot_protection_level="high",
+            rate_limiting_detected=True,
+            session_tracking=True,
+            # Threat intelligence
+            threat_categories=["bot_detection", "rate_limiting"],
+            malware_signatures=[],
+            # Operational intelligence
+            operational_recommendations=[
+                "implement_browser_automation",
+                "use_residential_proxies",
+                "add_human_behavior_simulation"
+            ],
+            alternative_strategies=["headless_browser", "api_integration"],
+            retry_recommendations={"backoff_strategy": "exponential", "max_attempts": 3},
+            # Cost and efficiency
+            estimated_cost=2.45,
+            efficiency_score=0.72,
+            resource_intensity="high",
+            # Compliance
+            compliance_flags=["data_residency_check"],
+            regulatory_requirements=["gdpr", "ccpa"],
+            data_residency_compliant=True,
+            # Context
+            correlation_id="enterprise_test_123",
+            workflow_id="workflow_456",
+            environment="production",
+            region="us-east-1",
+            # Business impact
+            business_impact_assessment="medium",
+            priority_level="high",
+            # Audit
+            analysis_steps=["dns_check", "connectivity_test", "waf_detection", "threat_analysis"],
+            decision_factors={"primary_risk": "waf_detection", "secondary_risk": "rate_limiting"},
+            # Performance
+            memory_usage_mb=45.2,
+            cpu_usage_percent=12.5,
+            network_requests=8,
+            # Quality
+            false_positive_probability=0.05,
+            analysis_completeness=0.95,
+            # Predictions
+            predicted_risk_trend="increasing",
+            recommended_monitoring_interval=15,
+            # Metadata
+            metadata={"custom_field": "custom_value"},
+            tags=["enterprise", "critical_infrastructure"]
+        )
+
+        print("✅ Enterprise-grade outcome created")
+        print(f"   Comprehensive Analysis: {len(enterprise_outcome.analysis_steps)} steps")
+        print(f"   Threat Categories: {enterprise_outcome.threat_categories}")
+        print(f"   Operational Recommendations: {len(enterprise_outcome.operational_recommendations)}")
+        print(f"   Compliance Flags: {enterprise_outcome.compliance_flags}")
+        print(f"   Estimated Cost: ${enterprise_outcome.estimated_cost}")
+        print(f"   Analysis Completeness: {enterprise_outcome.analysis_completeness}")
+        print(f"   Custom Tags: {enterprise_outcome.tags}")
+
+        assert enterprise_outcome.get_risk_category() == "high"
+        assert enterprise_outcome.get_action_priority() == "high"
+        assert enterprise_outcome.waf_detected == True
+        assert enterprise_outcome.estimated_cost == 2.45
+        assert enterprise_outcome.analysis_completeness == 0.95
+        assert "enterprise" in enterprise_outcome.tags
+
+    except Exception as e:
+        print(f"❌ Test 12 failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

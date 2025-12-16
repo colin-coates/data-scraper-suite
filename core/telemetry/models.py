@@ -14,6 +14,7 @@ import uuid
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 from enum import Enum
+import uuid
 
 try:
     from pydantic import BaseModel, Field, validator
@@ -359,6 +360,230 @@ class AuditLogEvent(BaseTelemetryEvent):
     retention_period: Optional[str] = Field(None, description="Audit retention period")
 
 
+class SentinelOutcome(BaseModel):
+    """
+    Enhanced enterprise-grade sentinel outcome model.
+
+    Comprehensive sentinel analysis results with advanced intelligence,
+    risk assessment, compliance tracking, and operational insights.
+    """
+
+    # Core sentinel outcome data
+    outcome_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique outcome identifier")
+    domain: str = Field(..., description="Target domain analyzed")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When analysis was performed")
+
+    # Temporal context
+    hour_of_day: int = Field(..., description="Hour of day (0-23) when analysis occurred")
+    day_of_week: int = Field(..., description="Day of week (0=Monday, 6=Sunday)")
+
+    # Risk assessment
+    risk_level: str = Field(..., description="Risk level assessment (low, medium, high, critical)")
+    risk_score: float = Field(0.0, description="Numerical risk score (0.0-1.0)")
+    confidence_score: float = Field(0.0, description="Confidence in risk assessment (0.0-1.0)")
+
+    # Action and decision
+    action: str = Field(..., description="Recommended action (allow, delay, restrict, block, human_required)")
+    action_reason: str = Field(..., description="Reason for recommended action")
+    blocked: bool = Field(False, description="Whether operation was blocked")
+
+    # Performance metrics
+    latency_ms: int = Field(0, description="Analysis latency in milliseconds")
+    processing_duration: float = Field(0.0, description="Total processing time in seconds")
+
+    # Resource allocation
+    proxy_pool: str = Field("", description="Proxy pool used for analysis")
+    proxy_effectiveness: Optional[float] = Field(None, description="Proxy effectiveness score (0.0-1.0)")
+
+    # Findings and analysis
+    findings: Dict[str, Any] = Field(default_factory=dict, description="Detailed security findings")
+    findings_count: int = Field(0, description="Total number of findings")
+    critical_findings: List[str] = Field(default_factory=list, description="Critical security issues found")
+    warning_findings: List[str] = Field(default_factory=list, description="Warning-level findings")
+
+    # Sentinel intelligence
+    sentinel_name: str = Field(..., description="Name of sentinel that performed analysis")
+    sentinel_version: str = Field("", description="Version of sentinel used")
+    analysis_method: str = Field(..., description="Analysis method employed")
+
+    # Threat intelligence
+    threat_indicators: List[str] = Field(default_factory=list, description="Detected threat indicators")
+    threat_categories: List[str] = Field(default_factory=list, description="Threat categories identified")
+    malware_signatures: List[str] = Field(default_factory=list, description="Malware signatures detected")
+
+    # Network intelligence
+    connectivity_status: str = Field("unknown", description="Network connectivity status")
+    dns_resolution_time: Optional[float] = Field(None, description="DNS resolution time in seconds")
+    ssl_validity_days: Optional[int] = Field(None, description="SSL certificate validity remaining in days")
+    response_time_ms: Optional[int] = Field(None, description="HTTP response time in milliseconds")
+
+    # WAF and anti-detection
+    waf_detected: bool = Field(False, description="Whether WAF was detected")
+    bot_protection_level: str = Field("none", description="Level of bot protection detected")
+    rate_limiting_detected: bool = Field(False, description="Whether rate limiting was detected")
+    session_tracking: bool = Field(False, description="Whether session tracking was detected")
+
+    # Trend analysis
+    historical_risk_trend: Optional[str] = Field(None, description="Risk trend compared to historical data")
+    baseline_comparison: Optional[float] = Field(None, description="Comparison to baseline risk score")
+    anomaly_score: Optional[float] = Field(None, description="Anomaly detection score")
+
+    # Operational intelligence
+    operational_recommendations: List[str] = Field(default_factory=list, description="Operational recommendations")
+    alternative_strategies: List[str] = Field(default_factory=list, description="Alternative scraping strategies")
+    retry_recommendations: Optional[Dict[str, Any]] = Field(None, description="Retry strategy recommendations")
+
+    # Cost and efficiency
+    estimated_cost: Optional[float] = Field(None, description="Estimated cost of proceeding")
+    efficiency_score: Optional[float] = Field(None, description="Efficiency score for this approach")
+    resource_intensity: str = Field("medium", description="Resource intensity assessment")
+
+    # Compliance and governance
+    compliance_flags: List[str] = Field(default_factory=list, description="Compliance flags raised")
+    regulatory_requirements: List[str] = Field(default_factory=list, description="Regulatory requirements identified")
+    data_residency_compliant: bool = Field(True, description="Whether analysis respects data residency")
+
+    # Metadata and context
+    correlation_id: Optional[str] = Field(None, description="Correlation ID for request tracing")
+    session_id: Optional[str] = Field(None, description="Session identifier")
+    workflow_id: Optional[str] = Field(None, description="Associated workflow identifier")
+
+    # Environment context
+    environment: str = Field("production", description="Deployment environment")
+    region: str = Field("", description="Geographic region of analysis")
+    network_segment: str = Field("", description="Network segment used")
+
+    # Business impact
+    business_impact_assessment: str = Field("low", description="Business impact assessment")
+    priority_level: str = Field("normal", description="Priority level for follow-up")
+    escalation_required: bool = Field(False, description="Whether escalation is required")
+
+    # Audit trail
+    audit_trail: List[Dict[str, Any]] = Field(default_factory=list, description="Audit trail of analysis steps")
+    analysis_steps: List[str] = Field(default_factory=list, description="Steps performed during analysis")
+    decision_factors: Dict[str, Any] = Field(default_factory=dict, description="Factors influencing final decision")
+
+    # Performance monitoring
+    memory_usage_mb: Optional[float] = Field(None, description="Memory usage during analysis")
+    cpu_usage_percent: Optional[float] = Field(None, description="CPU usage during analysis")
+    network_requests: Optional[int] = Field(None, description="Number of network requests made")
+
+    # Quality metrics
+    false_positive_probability: Optional[float] = Field(None, description="Probability of false positive")
+    analysis_completeness: float = Field(1.0, description="Completeness of analysis (0.0-1.0)")
+
+    # Future predictions
+    predicted_risk_trend: Optional[str] = Field(None, description="Predicted future risk trend")
+    recommended_monitoring_interval: Optional[int] = Field(None, description="Recommended monitoring interval in minutes")
+
+    # Custom metadata
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional analysis metadata")
+    tags: List[str] = Field(default_factory=list, description="Classification tags")
+
+    # Validation
+    @validator("hour_of_day")
+    def validate_hour(cls, v):
+        if not (0 <= v <= 23):
+            raise ValueError("hour_of_day must be between 0 and 23")
+        return v
+
+    @validator("day_of_week")
+    def validate_day(cls, v):
+        if not (0 <= v <= 6):
+            raise ValueError("day_of_week must be between 0 (Monday) and 6 (Sunday)")
+        return v
+
+    @validator("risk_score")
+    def validate_risk_score(cls, v):
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("risk_score must be between 0.0 and 1.0")
+        return v
+
+    @validator("confidence_score")
+    def validate_confidence_score(cls, v):
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("confidence_score must be between 0.0 and 1.0")
+        return v
+
+    @validator("proxy_effectiveness")
+    def validate_proxy_effectiveness(cls, v):
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("proxy_effectiveness must be between 0.0 and 1.0")
+        return v
+
+    @validator("efficiency_score")
+    def validate_efficiency_score(cls, v):
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("efficiency_score must be between 0.0 and 1.0")
+        return v
+
+    @validator("analysis_completeness")
+    def validate_analysis_completeness(cls, v):
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError("analysis_completeness must be between 0.0 and 1.0")
+        return v
+
+    def get_risk_category(self) -> str:
+        """Get human-readable risk category."""
+        if self.risk_score >= 0.8:
+            return "critical"
+        elif self.risk_score >= 0.6:
+            return "high"
+        elif self.risk_score >= 0.4:
+            return "medium"
+        elif self.risk_score >= 0.2:
+            return "low"
+        else:
+            return "minimal"
+
+    def get_action_priority(self) -> str:
+        """Get action priority based on risk and impact."""
+        if self.risk_level == "critical" or self.business_impact_assessment == "high":
+            return "urgent"
+        elif self.risk_level == "high" or self.business_impact_assessment == "medium":
+            return "high"
+        elif self.risk_level == "medium":
+            return "normal"
+        else:
+            return "low"
+
+    def get_compliance_summary(self) -> Dict[str, Any]:
+        """Get compliance summary for reporting."""
+        return {
+            "compliant": len(self.compliance_flags) == 0,
+            "flags": self.compliance_flags,
+            "regulatory_requirements": self.regulatory_requirements,
+            "data_residency_compliant": self.data_residency_compliant,
+            "audit_trail_complete": len(self.audit_trail or []) > 0
+        }
+
+    def get_performance_summary(self) -> Dict[str, Any]:
+        """Get performance summary for monitoring."""
+        return {
+            "latency_ms": self.latency_ms,
+            "processing_duration": self.processing_duration,
+            "memory_usage_mb": self.memory_usage_mb,
+            "cpu_usage_percent": self.cpu_usage_percent,
+            "network_requests": self.network_requests,
+            "efficiency_score": self.efficiency_score
+        }
+
+    def to_legacy_format(self) -> Dict[str, Any]:
+        """Convert to legacy format for backward compatibility."""
+        return {
+            "domain": self.domain,
+            "hour_of_day": self.hour_of_day,
+            "day_of_week": self.day_of_week,
+            "risk_level": self.risk_level,
+            "action": self.action,
+            "latency_ms": self.latency_ms,
+            "blocked": self.blocked,
+            "proxy_pool": self.proxy_pool,
+            "timestamp": self.timestamp,
+            "findings": self.findings
+        }
+
+
 # Union type for all telemetry events
 TelemetryEvent = Union[
     ScraperOperationEvent,
@@ -371,6 +596,11 @@ TelemetryEvent = Union[
     SecurityEvent,
     AuthorizationCheckEvent,
     AuditLogEvent
+]
+
+# Additional outcome models
+TelemetryOutcome = Union[
+    SentinelOutcome
 ]
 
 
@@ -498,5 +728,45 @@ def create_performance_metric_event(
         metric_name=metric_name,
         metric_value=metric_value,
         metric_unit=metric_unit,
+        **kwargs
+    )
+
+
+# Factory functions for outcome models
+def create_sentinel_outcome(
+    domain: str,
+    risk_level: str,
+    action: str,
+    sentinel_name: str,
+    findings: Optional[Dict[str, Any]] = None,
+    **kwargs
+) -> SentinelOutcome:
+    """Create a comprehensive sentinel outcome."""
+    # Calculate temporal context with defaults
+    now = kwargs.pop('timestamp', datetime.utcnow())
+    hour_of_day = kwargs.pop('hour_of_day', now.hour)
+    day_of_week = kwargs.pop('day_of_week', now.weekday())  # 0=Monday, 6=Sunday
+
+    # Set defaults for required fields not in kwargs
+    defaults = {
+        'latency_ms': 0,
+        'blocked': False,
+        'proxy_pool': '',
+        'findings': findings or {},
+    }
+
+    # Merge defaults with provided kwargs (kwargs take precedence)
+    for key, default_value in defaults.items():
+        if key not in kwargs:
+            kwargs[key] = default_value
+
+    return SentinelOutcome(
+        domain=domain,
+        hour_of_day=hour_of_day,
+        day_of_week=day_of_week,
+        risk_level=risk_level,
+        action=action,
+        timestamp=now,
+        sentinel_name=sentinel_name,
         **kwargs
     )
