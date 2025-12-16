@@ -941,3 +941,770 @@ def get_learner_status() -> Dict[str, Any]:
         "patterns_learned": len(_global_learner.patterns_learned),
         "last_trained": _global_learner.last_trained.isoformat() if _global_learner.last_trained else None
     }
+
+
+# Enhanced Domain Risk Learning Functions
+
+async def learn_domain_risk(
+    domain: str,
+    lookback_days: int = 30,
+    min_samples: int = 5
+) -> Dict[str, Any]:
+    """
+    Enterprise-grade domain risk learning with comprehensive analytics.
+
+    Analyzes historical sentinel outcomes to provide intelligent risk assessment,
+    optimal timing recommendations, and proxy pool effectiveness analysis.
+
+    Args:
+        domain: Domain to analyze
+        lookback_days: Number of days to look back for historical data
+        min_samples: Minimum samples required for meaningful analysis
+
+    Returns:
+        Comprehensive domain risk analysis with recommendations
+
+    Example:
+        analysis = await learn_domain_risk("example.com", lookback_days=90)
+        best_time = analysis["optimal_timing"]["best_hour"]
+        best_pool = analysis["optimal_proxy_pool"]["recommended"]
+    """
+    # Get historical data
+    history = await load_history(domain, lookback_days=lookback_days, limit=1000)
+
+    if len(history) < min_samples:
+        return {
+            "domain": domain,
+            "analysis_period_days": lookback_days,
+            "total_samples": len(history),
+            "error": f"Insufficient data: {len(history)} samples (minimum {min_samples} required)",
+            "recommendation": "Collect more data before making risk decisions"
+        }
+
+    # Perform comprehensive risk analysis
+    analysis = await _perform_domain_risk_analysis(domain, history, lookback_days)
+
+    # Emit telemetry for the analysis
+    await create_performance_metric_event(
+        metric_name="domain_risk_analysis",
+        metric_value=len(history),
+        metric_unit="samples_analyzed",
+        component_name="safety_learner",
+        metadata={
+            "domain": domain,
+            "analysis_period_days": lookback_days,
+            "risk_score": analysis["overall_risk"]["risk_score"],
+            "optimal_hour": analysis["optimal_timing"]["best_hour"],
+            "recommended_pool": analysis["optimal_proxy_pool"]["recommended"]
+        }
+    )
+
+    return analysis
+
+
+async def _perform_domain_risk_analysis(
+    domain: str,
+    history: List[SentinelOutcome],
+    lookback_days: int
+) -> Dict[str, Any]:
+    """Perform comprehensive domain risk analysis."""
+
+    # Basic temporal analysis (hour/proxy combinations)
+    temporal_stats = await _analyze_temporal_patterns(history)
+
+    # Advanced risk metrics
+    risk_metrics = await _calculate_risk_metrics(history)
+
+    # Optimal timing recommendations
+    optimal_timing = await _find_optimal_timing(history, temporal_stats)
+
+    # Proxy pool effectiveness
+    proxy_analysis = await _analyze_proxy_effectiveness(history, temporal_stats)
+
+    # Trend analysis
+    trend_analysis = await _analyze_risk_trends(history)
+
+    # Success rate analysis
+    success_analysis = await _analyze_success_patterns(history)
+
+    # Anomaly detection
+    anomaly_analysis = await _detect_risk_anomalies(history)
+
+    # Overall risk assessment
+    overall_risk = await _calculate_overall_risk(
+        risk_metrics, trend_analysis, anomaly_analysis
+    )
+
+    return {
+        "domain": domain,
+        "analysis_period_days": lookback_days,
+        "total_samples": len(history),
+        "date_range": {
+            "oldest": min(h.timestamp for h in history).isoformat(),
+            "newest": max(h.timestamp for h in history).isoformat()
+        },
+        "overall_risk": overall_risk,
+        "risk_metrics": risk_metrics,
+        "optimal_timing": optimal_timing,
+        "optimal_proxy_pool": proxy_analysis,
+        "trend_analysis": trend_analysis,
+        "success_analysis": success_analysis,
+        "anomaly_analysis": anomaly_analysis,
+        "temporal_patterns": temporal_stats,
+        "recommendations": await _generate_domain_recommendations(
+            overall_risk, optimal_timing, proxy_analysis, trend_analysis
+        ),
+        "confidence_metrics": await _calculate_analysis_confidence(history)
+    }
+
+
+async def _analyze_temporal_patterns(history: List[SentinelOutcome]) -> Dict[str, Any]:
+    """Analyze temporal patterns including hour/proxy combinations."""
+    from collections import defaultdict
+
+    # Enhanced stats tracking
+    stats = defaultdict(lambda: {
+        "runs": 0, "blocks": 0, "latency_total": 0, "latency_samples": 0,
+        "success_rate": 0.0, "avg_latency": 0.0, "efficiency_score": 0.0,
+        "risk_score_avg": 0.0, "confidence_avg": 0.0
+    })
+
+    # Collect comprehensive statistics
+    for outcome in history:
+        key = (outcome.hour_of_day, outcome.proxy_pool or "default")
+        stats[key]["runs"] += 1
+        stats[key]["blocks"] += int(outcome.blocked)
+        stats[key]["latency_total"] += outcome.latency_ms
+        stats[key]["latency_samples"] += 1
+        stats[key]["risk_score_avg"] += outcome.risk_score
+        stats[key]["confidence_avg"] += outcome.confidence_score
+
+    # Calculate derived metrics
+    scores = []
+    for (hour, pool), data in stats.items():
+        if data["runs"] == 0:
+            continue
+
+        block_rate = data["blocks"] / data["runs"]
+        success_rate = 1 - block_rate
+        avg_latency = data["latency_total"] / data["latency_samples"] if data["latency_samples"] > 0 else 1000
+        avg_risk = data["risk_score_avg"] / data["runs"]
+        avg_confidence = data["confidence_avg"] / data["runs"]
+
+        # Enhanced scoring algorithm
+        # Factors: success rate, latency efficiency, risk level, confidence
+        latency_efficiency = 1 / max(avg_latency / 1000, 0.1)  # Normalize to seconds
+        risk_penalty = 1 - avg_risk  # Lower risk is better
+        confidence_bonus = avg_confidence
+
+        # Weighted scoring
+        efficiency_score = (
+            success_rate * 0.4 +           # 40% - success rate
+            latency_efficiency * 0.3 +     # 30% - latency efficiency
+            risk_penalty * 0.2 +           # 20% - risk penalty
+            confidence_bonus * 0.1         # 10% - confidence bonus
+        )
+
+        scores.append({
+            "hour": hour,
+            "proxy_pool": pool,
+            "runs": data["runs"],
+            "blocks": data["blocks"],
+            "success_rate": success_rate,
+            "avg_latency_ms": avg_latency,
+            "avg_risk_score": avg_risk,
+            "avg_confidence": avg_confidence,
+            "efficiency_score": efficiency_score,
+            "recommendation_priority": "high" if efficiency_score > 0.7 else "medium" if efficiency_score > 0.4 else "low"
+        })
+
+    return {
+        "combinations_analyzed": len(scores),
+        "optimal_combinations": sorted(scores, key=lambda x: x["efficiency_score"], reverse=True),
+        "hourly_patterns": await _extract_hourly_patterns(scores),
+        "proxy_performance": await _extract_proxy_performance(scores),
+        "best_overall": max(scores, key=lambda x: x["efficiency_score"]) if scores else None
+    }
+
+
+async def _extract_hourly_patterns(scores: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract hourly performance patterns."""
+    hourly_stats = defaultdict(list)
+
+    for score in scores:
+        hourly_stats[score["hour"]].append(score["efficiency_score"])
+
+    hourly_patterns = {}
+    for hour, efficiencies in hourly_stats.items():
+        hourly_patterns[hour] = {
+            "avg_efficiency": statistics.mean(efficiencies),
+            "max_efficiency": max(efficiencies),
+            "min_efficiency": min(efficiencies),
+            "sample_count": len(efficiencies),
+            "consistency": 1 - (max(efficiencies) - min(efficiencies))  # Lower variance = higher consistency
+        }
+
+    return dict(hourly_patterns)
+
+
+async def _extract_proxy_performance(scores: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract proxy pool performance analysis."""
+    proxy_stats = defaultdict(list)
+
+    for score in scores:
+        proxy_stats[score["proxy_pool"]].append({
+            "efficiency": score["efficiency_score"],
+            "success_rate": score["success_rate"],
+            "avg_latency": score["avg_latency_ms"]
+        })
+
+    proxy_performance = {}
+    for pool, performances in proxy_stats.items():
+        efficiencies = [p["efficiency"] for p in performances]
+        success_rates = [p["success_rate"] for p in performances]
+        latencies = [p["avg_latency"] for p in performances]
+
+        proxy_performance[pool] = {
+            "avg_efficiency": statistics.mean(efficiencies),
+            "avg_success_rate": statistics.mean(success_rates),
+            "avg_latency_ms": statistics.mean(latencies),
+            "sample_count": len(performances),
+            "consistency_score": 1 - (max(efficiencies) - min(efficiencies)) if len(efficiencies) > 1 else 1.0,
+            "performance_trend": await _calculate_performance_trend(performances)
+        }
+
+    return dict(proxy_performance)
+
+
+async def _calculate_performance_trend(performances: List[Dict[str, Any]]) -> str:
+    """Calculate performance trend for proxy pool."""
+    if len(performances) < 3:
+        return "insufficient_data"
+
+    # Simple trend analysis based on efficiency scores
+    efficiencies = [p["efficiency"] for p in performances]
+    if len(efficiencies) >= 3:
+        first_half = statistics.mean(efficiencies[:len(efficiencies)//2])
+        second_half = statistics.mean(efficiencies[len(efficiencies)//2:])
+        if second_half > first_half * 1.05:
+            return "improving"
+        elif second_half < first_half * 0.95:
+            return "declining"
+    return "stable"
+
+
+async def _calculate_risk_metrics(history: List[SentinelOutcome]) -> Dict[str, Any]:
+    """Calculate comprehensive risk metrics."""
+    if not history:
+        return {"error": "No historical data"}
+
+    # Risk score analysis
+    risk_scores = [h.risk_score for h in history]
+    risk_levels = [h.risk_level for h in history]
+
+    # Risk level distribution
+    risk_distribution = defaultdict(int)
+    for level in risk_levels:
+        risk_distribution[level] += 1
+
+    # Statistical analysis
+    avg_risk = statistics.mean(risk_scores)
+    risk_std = statistics.stdev(risk_scores) if len(risk_scores) > 1 else 0
+
+    # Risk volatility (coefficient of variation)
+    risk_volatility = risk_std / max(avg_risk, 0.01)
+
+    # Block rate analysis
+    block_rate = sum(1 for h in history if h.blocked) / len(history)
+
+    # Success patterns
+    success_by_hour = defaultdict(lambda: {"success": 0, "total": 0})
+    for h in history:
+        hour_key = h.hour_of_day
+        success_by_hour[hour_key]["total"] += 1
+        if not h.blocked:
+            success_by_hour[hour_key]["success"] += 1
+
+    hourly_success_rates = {}
+    for hour, stats in success_by_hour.items():
+        hourly_success_rates[hour] = stats["success"] / max(stats["total"], 1)
+
+    return {
+        "average_risk_score": avg_risk,
+        "risk_volatility": risk_volatility,
+        "overall_block_rate": block_rate,
+        "risk_distribution": dict(risk_distribution),
+        "most_common_risk_level": max(risk_distribution.items(), key=lambda x: x[1])[0] if risk_distribution else "unknown",
+        "hourly_success_rates": dict(hourly_success_rates),
+        "risk_percentiles": {
+            "25th": statistics.quantiles(risk_scores, n=4)[0] if len(risk_scores) >= 4 else min(risk_scores),
+            "50th": statistics.quantiles(risk_scores, n=4)[1] if len(risk_scores) >= 4 else statistics.median(risk_scores),
+            "75th": statistics.quantiles(risk_scores, n=4)[2] if len(risk_scores) >= 4 else max(risk_scores)
+        }
+    }
+
+
+async def _find_optimal_timing(
+    history: List[SentinelOutcome],
+    temporal_stats: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Find optimal timing for domain operations."""
+    if not temporal_stats.get("optimal_combinations"):
+        return {"error": "Insufficient temporal data"}
+
+    # Find best hour overall
+    combinations = temporal_stats["optimal_combinations"]
+    best_combination = max(combinations, key=lambda x: x["efficiency_score"])
+
+    # Find best hour per proxy pool
+    best_by_pool = {}
+    for combo in combinations:
+        pool = combo["proxy_pool"]
+        if pool not in best_by_pool or combo["efficiency_score"] > best_by_pool[pool]["efficiency_score"]:
+            best_by_pool[pool] = combo
+
+    # Time-based patterns
+    hourly_patterns = temporal_stats.get("hourly_patterns", {})
+
+    # Business hours analysis (9-17)
+    business_hours = {h: hourly_patterns.get(h, {}).get("avg_efficiency", 0) for h in range(9, 18)}
+    non_business_hours = {h: hourly_patterns.get(h, {}).get("avg_efficiency", 0) for h in list(range(0, 9)) + list(range(18, 24))}
+
+    business_avg = statistics.mean(business_hours.values()) if business_hours else 0
+    non_business_avg = statistics.mean(non_business_hours.values()) if non_business_hours else 0
+
+    return {
+        "best_hour": best_combination["hour"],
+        "best_hour_efficiency": best_combination["efficiency_score"],
+        "best_hour_success_rate": best_combination["success_rate"],
+        "best_by_proxy_pool": best_by_pool,
+        "business_vs_non_business": {
+            "business_hours_avg_efficiency": business_avg,
+            "non_business_hours_avg_efficiency": non_business_avg,
+            "recommendation": "business_hours" if business_avg > non_business_avg * 1.1 else "non_business_hours" if non_business_avg > business_avg * 1.1 else "no_preference"
+        },
+        "hourly_efficiency_ranking": sorted(
+            [(hour, stats["avg_efficiency"]) for hour, stats in hourly_patterns.items()],
+            key=lambda x: x[1],
+            reverse=True
+        ),
+        "consistency_analysis": {
+            "most_consistent_hour": max(
+                [(hour, stats["consistency"]) for hour, stats in hourly_patterns.items()],
+                key=lambda x: x[1]
+            )[0] if hourly_patterns else None
+        }
+    }
+
+
+async def _analyze_proxy_effectiveness(
+    history: List[SentinelOutcome],
+    temporal_stats: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Analyze proxy pool effectiveness."""
+    proxy_performance = temporal_stats.get("proxy_performance", {})
+
+    if not proxy_performance:
+        return {"error": "No proxy performance data available"}
+
+    # Overall best proxy
+    best_proxy = max(proxy_performance.items(), key=lambda x: x[1]["avg_efficiency"])
+
+    # Reliability analysis
+    reliability_scores = {}
+    for pool, perf in proxy_performance.items():
+        # Reliability = consistency * success_rate * (1 / avg_latency_normalized)
+        consistency = perf["consistency_score"]
+        success_rate = perf["avg_success_rate"]
+        latency_normalized = min(perf["avg_latency_ms"] / 1000, 10)  # Cap at 10 seconds
+        latency_score = 1 / max(latency_normalized, 0.1)
+
+        reliability_scores[pool] = consistency * 0.3 + success_rate * 0.4 + latency_score * 0.3
+
+    most_reliable = max(reliability_scores.items(), key=lambda x: x[1])
+
+    # Cost-effectiveness analysis (if cost data available)
+    cost_effective = {}
+    for pool, perf in proxy_performance.items():
+        # Assume cost correlates with performance (higher performance = higher cost)
+        # In real implementation, this would use actual cost data
+        estimated_cost = 1 / max(perf["avg_efficiency"], 0.1)  # Inverse relationship
+        cost_effective[pool] = perf["avg_efficiency"] / estimated_cost
+
+    most_cost_effective = max(cost_effective.items(), key=lambda x: x[1])
+
+    return {
+        "recommended_proxy": best_proxy[0],
+        "recommended_efficiency": best_proxy[1]["avg_efficiency"],
+        "proxy_performance_ranking": sorted(
+            [(pool, perf["avg_efficiency"]) for pool, perf in proxy_performance.items()],
+            key=lambda x: x[1],
+            reverse=True
+        ),
+        "most_reliable_proxy": most_reliable[0],
+        "most_reliable_score": most_reliable[1],
+        "most_cost_effective_proxy": most_cost_effective[0],
+        "proxy_comparison": {
+            pool: {
+                "efficiency": perf["avg_efficiency"],
+                "success_rate": perf["avg_success_rate"],
+                "avg_latency_ms": perf["avg_latency_ms"],
+                "consistency": perf["consistency_score"],
+                "trend": perf["performance_trend"],
+                "sample_count": perf["sample_count"]
+            }
+            for pool, perf in proxy_performance.items()
+        }
+    }
+
+
+async def _analyze_risk_trends(history: List[SentinelOutcome]) -> Dict[str, Any]:
+    """Analyze risk trends over time."""
+    if len(history) < 3:
+        return {"error": "Insufficient data for trend analysis"}
+
+    # Sort by timestamp
+    sorted_history = sorted(history, key=lambda x: x.timestamp)
+
+    # Calculate moving averages
+    window_size = max(len(sorted_history) // 10, 3)  # Adaptive window
+    risk_scores = [h.risk_score for h in sorted_history]
+
+    # Simple moving average
+    moving_avg = []
+    for i in range(window_size, len(risk_scores) + 1):
+        window = risk_scores[i - window_size:i]
+        moving_avg.append(statistics.mean(window))
+
+    # Trend analysis
+    if len(moving_avg) >= 2:
+        trend_slope = (moving_avg[-1] - moving_avg[0]) / len(moving_avg)
+        trend_direction = "increasing" if trend_slope > 0.01 else "decreasing" if trend_slope < -0.01 else "stable"
+        trend_magnitude = abs(trend_slope)
+    else:
+        trend_direction = "unknown"
+        trend_magnitude = 0
+
+    # Volatility analysis
+    volatility = statistics.stdev(risk_scores) if len(risk_scores) > 1 else 0
+
+    # Recent vs historical comparison
+    midpoint = len(sorted_history) // 2
+    recent_avg = statistics.mean(risk_scores[midpoint:])
+    historical_avg = statistics.mean(risk_scores[:midpoint])
+
+    recency_comparison = {
+        "recent_avg_risk": recent_avg,
+        "historical_avg_risk": historical_avg,
+        "change": recent_avg - historical_avg,
+        "change_percent": ((recent_avg - historical_avg) / max(historical_avg, 0.01)) * 100
+    }
+
+    return {
+        "trend_direction": trend_direction,
+        "trend_magnitude": trend_magnitude,
+        "volatility": volatility,
+        "moving_average_window": window_size,
+        "moving_averages": moving_avg[-10:] if len(moving_avg) > 10 else moving_avg,  # Last 10 points
+        "recency_comparison": recency_comparison,
+        "risk_stability": 1 - min(volatility, 1.0),  # Lower volatility = higher stability
+        "prediction_confidence": min(len(sorted_history) / 50, 1.0)  # More data = higher confidence
+    }
+
+
+async def _analyze_success_patterns(history: List[SentinelOutcome]) -> Dict[str, Any]:
+    """Analyze success patterns and factors."""
+    successful = [h for h in history if not h.blocked]
+    blocked = [h for h in history if h.blocked]
+
+    success_rate = len(successful) / len(history) if history else 0
+
+    # Success factors analysis
+    if successful and blocked:
+        success_factors = {
+            "avg_latency_success": statistics.mean([h.latency_ms for h in successful]),
+            "avg_latency_blocked": statistics.mean([h.latency_ms for h in blocked]),
+            "latency_difference": statistics.mean([h.latency_ms for h in successful]) - statistics.mean([h.latency_ms for h in blocked])
+        }
+    else:
+        success_factors = {"insufficient_data": True}
+
+    # Time-based success patterns
+    hourly_success = defaultdict(lambda: {"success": 0, "total": 0})
+    for h in history:
+        hourly_success[h.hour_of_day]["total"] += 1
+        if not h.blocked:
+            hourly_success[h.hour_of_day]["success"] += 1
+
+    best_hour = max(hourly_success.items(), key=lambda x: x[1]["success"] / max(x[1]["total"], 1))[0] if hourly_success else None
+
+    # Proxy-based success patterns
+    proxy_success = defaultdict(lambda: {"success": 0, "total": 0})
+    for h in history:
+        pool = h.proxy_pool or "default"
+        proxy_success[pool]["total"] += 1
+        if not h.blocked:
+            proxy_success[pool]["success"] += 1
+
+    best_proxy = max(proxy_success.items(), key=lambda x: x[1]["success"] / max(x[1]["total"], 1))[0] if proxy_success else None
+
+    return {
+        "overall_success_rate": success_rate,
+        "total_operations": len(history),
+        "successful_operations": len(successful),
+        "blocked_operations": len(blocked),
+        "success_factors": success_factors,
+        "best_hour_for_success": best_hour,
+        "best_proxy_for_success": best_proxy,
+        "hourly_success_rates": {
+            hour: stats["success"] / max(stats["total"], 1)
+            for hour, stats in hourly_success.items()
+        },
+        "proxy_success_rates": {
+            proxy: stats["success"] / max(stats["total"], 1)
+            for proxy, stats in proxy_success.items()
+        }
+    }
+
+
+async def _detect_risk_anomalies(history: List[SentinelOutcome]) -> Dict[str, Any]:
+    """Detect anomalous risk patterns."""
+    if len(history) < 10:
+        return {"insufficient_data": True, "anomaly_count": 0}
+
+    risk_scores = [h.risk_score for h in history]
+    latencies = [h.latency_ms for h in history]
+
+    # Simple anomaly detection using statistical methods
+    risk_mean = statistics.mean(risk_scores)
+    risk_std = statistics.stdev(risk_scores) if len(risk_scores) > 1 else 0
+
+    latency_mean = statistics.mean(latencies)
+    latency_std = statistics.stdev(latencies) if len(latencies) > 1 else 0
+
+    # Anomalies: values beyond 2 standard deviations
+    risk_anomalies = [
+        i for i, score in enumerate(risk_scores)
+        if abs(score - risk_mean) > 2 * risk_std
+    ]
+
+    latency_anomalies = [
+        i for i, lat in enumerate(latencies)
+        if abs(lat - latency_mean) > 2 * latency_std
+    ]
+
+    # Anomaly patterns
+    anomaly_patterns = []
+    for i in range(len(history)):
+        is_risk_anomaly = i in risk_anomalies
+        is_latency_anomaly = i in latency_anomalies
+
+        if is_risk_anomaly or is_latency_anomaly:
+            anomaly_patterns.append({
+                "index": i,
+                "timestamp": history[i].timestamp.isoformat(),
+                "risk_anomaly": is_risk_anomaly,
+                "latency_anomaly": is_latency_anomaly,
+                "risk_score": history[i].risk_score,
+                "latency_ms": history[i].latency_ms,
+                "blocked": history[i].blocked
+            })
+
+    return {
+        "anomaly_count": len(anomaly_patterns),
+        "anomalies": anomaly_patterns[:10],  # Limit to top 10
+        "anomaly_rate": len(anomaly_patterns) / len(history),
+        "risk_anomaly_rate": len(risk_anomalies) / len(history),
+        "latency_anomaly_rate": len(latency_anomalies) / len(history),
+        "anomaly_thresholds": {
+            "risk_mean": risk_mean,
+            "risk_std": risk_std,
+            "latency_mean": latency_mean,
+            "latency_std": latency_std
+        }
+    }
+
+
+async def _calculate_overall_risk(
+    risk_metrics: Dict[str, Any],
+    trend_analysis: Dict[str, Any],
+    anomaly_analysis: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Calculate overall risk assessment combining multiple factors."""
+
+    # Base risk from metrics
+    base_risk = risk_metrics.get("average_risk_score", 0.5)
+
+    # Adjust for trends
+    trend_adjustment = 0
+    if trend_analysis.get("trend_direction") == "increasing":
+        trend_adjustment = trend_analysis.get("trend_magnitude", 0) * 0.2
+    elif trend_analysis.get("trend_direction") == "decreasing":
+        trend_adjustment = -trend_analysis.get("trend_magnitude", 0) * 0.2
+
+    # Adjust for anomalies
+    anomaly_adjustment = anomaly_analysis.get("anomaly_rate", 0) * 0.3
+
+    # Adjust for volatility
+    volatility_adjustment = risk_metrics.get("risk_volatility", 0) * 0.1
+
+    # Calculate final risk score
+    final_risk_score = max(0.0, min(1.0, base_risk + trend_adjustment + anomaly_adjustment + volatility_adjustment))
+
+    # Determine risk level
+    if final_risk_score >= 0.8:
+        risk_level = "critical"
+    elif final_risk_score >= 0.6:
+        risk_level = "high"
+    elif final_risk_score >= 0.4:
+        risk_level = "medium"
+    elif final_risk_score >= 0.2:
+        risk_level = "low"
+    else:
+        risk_level = "minimal"
+
+    return {
+        "risk_level": risk_level,
+        "risk_score": final_risk_score,
+        "base_risk": base_risk,
+        "adjustments": {
+            "trend": trend_adjustment,
+            "anomaly": anomaly_adjustment,
+            "volatility": volatility_adjustment
+        },
+        "confidence_factors": {
+            "data_points": risk_metrics.get("total_samples", 0),
+            "volatility_penalty": min(volatility_adjustment, 0.2),
+            "trend_confidence": trend_analysis.get("prediction_confidence", 0.5)
+        }
+    }
+
+
+async def _generate_domain_recommendations(
+    overall_risk: Dict[str, Any],
+    optimal_timing: Dict[str, Any],
+    proxy_analysis: Dict[str, Any],
+    trend_analysis: Dict[str, Any]
+) -> List[str]:
+    """Generate comprehensive domain recommendations."""
+    recommendations = []
+
+    # Risk-based recommendations
+    risk_level = overall_risk["risk_level"]
+    if risk_level == "critical":
+        recommendations.extend([
+            "🚨 CRITICAL RISK: Immediate suspension of operations recommended",
+            "🔍 Comprehensive security audit required before any operations",
+            "⚖️ Legal review recommended for compliance implications",
+            "🚫 Consider domain blocklisting until risk assessment completed"
+        ])
+    elif risk_level == "high":
+        recommendations.extend([
+            "⚠️ HIGH RISK: Enhanced monitoring and approval required",
+            "🔒 Implement strict rate limiting and proxy rotation",
+            "👥 Human approval required for all operations",
+            "📊 Weekly risk reassessment recommended"
+        ])
+    elif risk_level == "medium":
+        recommendations.extend([
+            "📈 MEDIUM RISK: Standard monitoring sufficient",
+            "⚡ Consider performance optimization during optimal hours",
+            "👀 Regular risk monitoring recommended",
+            "📋 Document operational procedures"
+        ])
+
+    # Timing recommendations
+    if optimal_timing.get("best_hour") is not None:
+        best_hour = optimal_timing["best_hour"]
+        efficiency = optimal_timing.get("best_hour_efficiency", 0)
+        recommendations.append(".1f")
+
+    # Proxy recommendations
+    if proxy_analysis.get("recommended_proxy"):
+        recommended_pool = proxy_analysis["recommended_proxy"]
+        efficiency = proxy_analysis.get("recommended_efficiency", 0)
+        recommendations.append(".1f")
+
+    # Trend-based recommendations
+    trend_direction = trend_analysis.get("trend_direction")
+    if trend_direction == "increasing":
+        recommendations.append("📈 RISK TREND: Increasing risk detected - consider reducing operation frequency")
+    elif trend_direction == "decreasing":
+        recommendations.append("📉 RISK TREND: Risk decreasing - monitor for continued improvement")
+
+    # Business hours recommendations
+    business_pref = optimal_timing.get("business_vs_non_business", {}).get("recommendation")
+    if business_pref == "business_hours":
+        recommendations.append("🏢 OPERATE DURING BUSINESS HOURS: Higher success rates observed during 9-17")
+    elif business_pref == "non_business_hours":
+        recommendations.append("🌙 OPERATE DURING OFF-HOURS: Better performance outside business hours")
+
+    return recommendations[:8]  # Limit to top 8 recommendations
+
+
+async def _calculate_analysis_confidence(history: List[SentinelOutcome]) -> Dict[str, Any]:
+    """Calculate confidence metrics for the analysis."""
+    sample_size = len(history)
+
+    # Base confidence from sample size
+    size_confidence = min(sample_size / 100, 1.0)  # 100 samples = max confidence
+
+    # Time span confidence (more spread out data = better)
+    if sample_size >= 2:
+        time_span_days = (max(h.timestamp for h in history) - min(h.timestamp for h in history)).days
+        time_confidence = min(time_span_days / 30, 1.0)  # 30 days = max confidence
+    else:
+        time_confidence = 0.0
+
+    # Diversity confidence (more diverse conditions = better)
+    unique_hours = len(set(h.hour_of_day for h in history))
+    unique_pools = len(set((h.proxy_pool or "default") for h in history))
+
+    diversity_confidence = min((unique_hours * unique_pools) / 50, 1.0)  # 50 combinations = max confidence
+
+    overall_confidence = (size_confidence * 0.4 + time_confidence * 0.3 + diversity_confidence * 0.3)
+
+    return {
+        "overall_confidence": overall_confidence,
+        "confidence_factors": {
+            "sample_size": sample_size,
+            "size_confidence": size_confidence,
+            "time_span_days": time_span_days if sample_size >= 2 else 0,
+            "time_confidence": time_confidence,
+            "unique_hours": unique_hours,
+            "unique_pools": unique_pools,
+            "diversity_confidence": diversity_confidence
+        },
+        "confidence_interpretation": (
+            "high" if overall_confidence >= 0.8 else
+            "medium" if overall_confidence >= 0.6 else
+            "low"
+        )
+    }
+
+
+# Legacy function for backward compatibility
+def learn_domain_risk(history):
+    """
+    Legacy domain risk learning function.
+
+    This function is maintained for backward compatibility.
+    For new implementations, use the async learn_domain_risk() function instead.
+    """
+    from collections import defaultdict
+
+    stats = defaultdict(lambda: {"blocks": 0, "runs": 0, "lat": 0})
+    for h in history:
+        k = (h.hour_of_day, getattr(h, 'proxy_pool', 'default'))
+        stats[k]["runs"] += 1
+        stats[k]["blocks"] += int(getattr(h, 'blocked', False))
+        stats[k]["lat"] += getattr(h, 'latency_ms', 0)
+
+    scores = []
+    for (hour, pool), v in stats.items():
+        block_rate = v["blocks"] / max(v["runs"], 1)
+        avg_lat = v["lat"] / max(v["runs"], 1)
+        score = (1 - block_rate) / max(avg_lat, 1)
+        scores.append({"hour": hour, "pool": pool, "score": score})
+
+    return sorted(scores, key=lambda x: x["score"], reverse=True)
