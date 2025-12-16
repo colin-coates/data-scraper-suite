@@ -44,6 +44,7 @@ __all__ = [
     'create_performance_sentinel',
     'create_network_sentinel',
     'create_waf_sentinel',
+    'WafSentinel',
     'register_sentinel',
     'unregister_sentinel',
     'get_registered_sentinels',
