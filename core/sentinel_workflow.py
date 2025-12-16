@@ -127,6 +127,29 @@ async def start_scrape_with_sentinels(
             if verdict.risk_level == "critical":
                 raise SentinelWorkflowError(f"Critical risk - scraping blocked: {verdict.reason}", verdict)
 
+        elif verdict.action == "human_required":
+            logger.warning(f"👤 Human approval required: {verdict.reason}")
+
+            # Check for human override authorization
+            if not hasattr(control, 'authorization') or not control.authorization or not hasattr(control.authorization, 'override') or not control.authorization.override:
+                logger.error("❌ Human override authorization missing - blocking operation")
+                await _emit_blocked_telemetry(workflow_id, verdict, control)
+                raise SentinelWorkflowError(
+                    f"Human override required for this scrape: {verdict.reason}. "
+                    "Please obtain proper authorization before proceeding.",
+                    verdict
+                )
+
+            logger.info("✅ Human override authorization confirmed - proceeding with enhanced monitoring")
+
+            # Even with override, add additional monitoring and constraints
+            verdict.enforced_constraints.update({
+                "human_override_used": True,
+                "enhanced_audit_required": True,
+                "executive_notification": True,
+                "operation_flagged": True
+            })
+
         elif verdict.action == "delay":
             delay_minutes = verdict.constraints.get("delay_minutes", 5)
             logger.warning(f"⏳ Applying safety delay: {delay_minutes} minutes")
@@ -298,6 +321,11 @@ async def start_scrape(control: ScrapeControlContract) -> None:
     # Check if scraping was blocked
     if result["verdict"]["action"] in ["block", "delay"]:
         raise RuntimeError(f"Scrape aborted: {result['verdict']['reason']}")
+
+    # Check if human approval is required
+    if result["verdict"]["action"] == "human_required":
+        if not hasattr(control, 'authorization') or not control.authorization or not hasattr(control.authorization, 'override') or not control.authorization.override:
+            raise RuntimeError(f"Human override required for this scrape: {result['verdict']['reason']}")
 
     # In the original, this would call run_scraper(control)
     # For now, we'll just log the successful execution

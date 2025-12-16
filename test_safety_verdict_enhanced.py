@@ -304,6 +304,65 @@ def test_enhanced_safety_verdict():
     except Exception as e:
         print(f"❌ Test 8 failed: {e}")
 
+    # Test 11: Human Required Action with Override Check
+    print("\n📋 Test 11: Human Required Action with Authorization Override")
+    try:
+        from unittest.mock import patch
+
+        # Test with human_required verdict
+        reports = [
+            SentinelReport(sentinel_name="waf", domain="high-risk-site.com", timestamp=datetime.utcnow(),
+                          risk_level="high", findings={"suspicious_patterns": True}, recommended_action="human_required")
+        ]
+
+        verdict = safety_verdict(reports, control, workflow_id="human_test_001")
+
+        print("✅ Human required verdict generated")
+        print(f"   Action: {verdict.action}")
+        print(f"   Risk Level: {verdict.risk_level}")
+        print(f"   Human Approval Required: {verdict.enforced_constraints.get('human_approval_required')}")
+        print(f"   Human Override Check Required: {verdict.enforced_constraints.get('human_override_check_required')}")
+
+        assert verdict.action == "human_required"
+        assert verdict.risk_level == "high"
+        assert verdict.enforced_constraints.get("human_approval_required") == True
+        assert verdict.enforced_constraints.get("human_override_check_required") == True
+        assert "obtain_human_override_authorization" in verdict.recommended_actions
+
+        # Test workflow with override
+        control_with_override = MockControl()
+        control_with_override.authorization = type('obj', (object,), {'override': True})()
+
+        with patch('core.sentinel_workflow.run_sentinels') as mock_run_sentinels:
+            from core.sentinels.base import SentinelReport
+            mock_reports = [
+                SentinelReport(sentinel_name="waf", domain="high-risk-site.com", timestamp=datetime.utcnow(),
+                              risk_level="high", findings={}, recommended_action="human_required")
+            ]
+            mock_run_sentinels.return_value = mock_reports
+
+            # This should succeed with override
+            result = await start_scrape_with_sentinels(control_with_override, workflow_id="override_test_001")
+            print(f"   Override Test Result: {result['verdict']['action']}")
+            assert result['verdict']['action'] == 'human_required'
+
+        # Test workflow without override - should fail
+        control_without_override = MockControl()
+        control_without_override.authorization = type('obj', (object,), {'override': False})()
+
+        try:
+            with patch('core.sentinel_workflow.run_sentinels') as mock_run_sentinels:
+                mock_run_sentinels.return_value = mock_reports
+                await start_scrape_with_sentinels(control_without_override, workflow_id="no_override_test_001")
+            print("❌ Should have failed without override")
+            assert False, "Should have raised SentinelWorkflowError"
+        except Exception as e:
+            print(f"✅ Correctly blocked without override: {type(e).__name__}")
+            assert "Human override required" in str(e)
+
+    except Exception as e:
+        print(f"❌ Test 11 failed: {e}")
+
     # Test 9: Enhanced Max-Risk Algorithm - Low Risk Allowance
     print("\n📋 Test 9: Enhanced Max-Risk Algorithm - Low Risk Allowance")
     try:
@@ -380,6 +439,7 @@ def test_enhanced_safety_verdict():
     print("✅ Enhanced Max-Risk Algorithm - Medium Risk Restrictions")
     print("✅ Enhanced Max-Risk Algorithm - Low Risk Allowance")
     print("✅ Enhanced Max-Risk Algorithm with Custom Thresholds")
+    print("✅ Human Required Action with Authorization Override Check")
     print("✅ Critical risk detection and blocking")
     print("✅ Medium risk delay with sophisticated analysis")
     print("✅ Low risk allowance with monitoring")
@@ -403,6 +463,7 @@ def test_enhanced_safety_verdict():
     print("🔹 Performance and Processing Metrics")
     print("🔹 Pydantic Compatibility with Fallbacks")
     print("🔹 Human Intervention Workflows")
+    print("🔹 Human Override Authorization Checks")
     print("🔹 Incident Response Integration")
 
 
