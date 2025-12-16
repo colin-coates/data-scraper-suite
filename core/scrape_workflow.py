@@ -12,14 +12,309 @@ governance, cost control, and compliance enforcement.
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional
 
-from .control_models import ScrapeControlContract
+from .control_models import ScrapeControlContract, ScrapeTempo
 from .deployment_timer import DeploymentTimer
 from .cost_governor import CostGovernor
 from .authorization import AuthorizationGate
 
 logger = logging.getLogger(__name__)
+
+
+async def run_scraper(scraper, control: ScrapeControlContract):
+    """
+    Execute a scraper with full governance controls and validation.
+
+    This function orchestrates the complete scraper execution workflow:
+    1. Authorization validation
+    2. Intent validation
+    3. Timer initialization
+    4. Budget enforcement
+    5. Scraper execution
+
+    Args:
+        scraper: The scraper instance to execute
+        control: Complete control contract with governance parameters
+
+    Returns:
+        Execution results with governance metrics
+
+    Raises:
+        ValueError: If governance validations fail
+        RuntimeError: If execution encounters errors
+    """
+    # Step 1: Authorization validation
+    AuthorizationGate.validate(control.authorization)
+
+    # Step 2: Intent validation
+    validate_intent(control)
+
+    # Step 3: Start timer (deployment window)
+    await DeploymentTimer.await_window(control.deployment_window)
+
+    # Step 4: Enforce budget
+    cost_governor = await CostGovernor.initialize(control.budget)
+
+    try:
+        # Step 5: Run scraper with monitoring
+        result = await run_scraper_with_monitoring(scraper, control, cost_governor)
+
+        # Finalize with governance reporting
+        final_status = await finalize_scraper_execution(control, cost_governor, result)
+        return final_status
+
+    except Exception as e:
+        logger.error(f"Scraper execution failed: {e}")
+        raise
+    finally:
+        # Cleanup resources
+        if 'cost_governor' in locals():
+            await cost_governor.cleanup()
+
+
+def validate_intent(control: ScrapeControlContract) -> None:
+    """
+    Validate the scraping intent against business rules and constraints.
+
+    Args:
+        control: Control contract containing intent specifications
+
+    Raises:
+        ValueError: If intent validation fails
+    """
+    intent = control.intent
+
+    # Validate required fields
+    if not intent.geography:
+        raise ValueError("Intent must specify geography targeting")
+
+    if not intent.sources:
+        raise ValueError("Intent must specify data sources")
+
+    # Validate geography constraints (allow common geographic keys)
+    valid_geo_keys = ["country", "region", "state", "city", "states", "countries", "regions"]
+    for geo_key in intent.geography.keys():
+        if geo_key not in valid_geo_keys:
+            raise ValueError(f"Invalid geography key: {geo_key}. Valid keys: {valid_geo_keys}")
+
+    # Validate source constraints
+    allowed_sources = [
+        "linkedin", "facebook", "twitter", "instagram",
+        "company_websites", "news", "public_records",
+        "business_directories", "social_media"
+    ]
+
+    for source in intent.sources:
+        if source not in allowed_sources:
+            raise ValueError(f"Unsupported data source: {source}")
+
+    # Validate demographic constraints (if provided)
+    if intent.demographics:
+        valid_demo_keys = ["age_range", "income_tier", "gender", "occupation"]
+        for demo_key in intent.demographics.keys():
+            if demo_key not in valid_demo_keys:
+                raise ValueError(f"Invalid demographic key: {demo_key}")
+
+    # Validate event constraints (if provided)
+    if intent.events:
+        valid_event_keys = ["weddings", "corporate", "social", "professional"]
+        for event_key in intent.events.keys():
+            if event_key not in valid_event_keys:
+                raise ValueError(f"Invalid event key: {event_key}")
+
+    logger.info(f"Intent validation passed for {len(intent.sources)} sources")
+
+
+async def run_scraper_with_monitoring(scraper, control: ScrapeControlContract, cost_governor: CostGovernor) -> Dict[str, Any]:
+    """
+    Execute scraper with real-time monitoring and governance.
+
+    Args:
+        scraper: The scraper instance to execute
+        control: Control contract with governance parameters
+        cost_governor: Active cost governor for resource monitoring
+
+    Returns:
+        Execution results with monitoring data
+    """
+    import time
+
+    start_time = time.time()
+    result = {
+        "success": False,
+        "records_found": 0,
+        "errors": [],
+        "execution_time": 0,
+        "cost_incurred": 0,
+        "budget_remaining": 0
+    }
+
+    try:
+        logger.info(f"Starting scraper execution with governance monitoring")
+
+        # Execute the scraper (this would be the actual scraper.run() call)
+        # For now, simulate execution with monitoring
+        execution_result = await simulate_scraper_execution(scraper, control, cost_governor)
+
+        result.update(execution_result)
+        result["success"] = True
+
+        logger.info(f"Scraper execution completed: {result['records_found']} records")
+
+    except Exception as e:
+        result["errors"].append(str(e))
+        logger.error(f"Scraper execution error: {e}")
+        raise
+
+    finally:
+        execution_time = time.time() - start_time
+        result["execution_time"] = execution_time
+
+        # Get final cost status
+        cost_status = cost_governor.get_budget_status()
+        result["cost_incurred"] = cost_status.get("total_cost", 0)
+        result["budget_remaining"] = (
+            cost_status.get("budget_limits", {}).get("max_runtime_minutes", 0) -
+            cost_status.get("current_usage", {}).get("runtime_minutes", 0)
+        )
+
+    return result
+
+
+async def simulate_scraper_execution(scraper, control: ScrapeControlContract, cost_governor: CostGovernor) -> Dict[str, Any]:
+    """
+    Simulate scraper execution with monitoring (replace with actual scraper logic).
+
+    Args:
+        scraper: Scraper instance
+        control: Control contract
+        cost_governor: Cost governor for monitoring
+
+    Returns:
+        Simulated execution results
+    """
+    import random
+    import asyncio
+
+    # Simulate execution time and records based on control parameters
+    tempo_settings = control.get_tempo_settings()
+    base_delay = tempo_settings.get("base_delay", 3.0)
+
+    # Simulate variable execution based on source type and tempo
+    if "linkedin" in control.intent.sources:
+        records_base = 150
+        time_base = 120
+    elif "facebook" in control.intent.sources:
+        records_base = 80
+        time_base = 90
+    else:
+        records_base = 100
+        time_base = 60
+
+    # Apply tempo multiplier
+    if control.tempo == ScrapeTempo.FORENSIC:
+        time_multiplier = 3.0
+        record_multiplier = 0.7
+    elif control.tempo == ScrapeTempo.AGGRESSIVE:
+        time_multiplier = 0.5
+        record_multiplier = 1.3
+    else:  # HUMAN
+        time_multiplier = 1.0
+        record_multiplier = 1.0
+
+    execution_time = time_base * time_multiplier
+    expected_records = int(records_base * record_multiplier)
+
+    # Simulate execution with monitoring
+    records_found = 0
+    for i in range(min(10, expected_records // 10)):  # Simulate in batches
+        if cost_governor.should_shutdown():
+            logger.warning("Cost budget exceeded during execution")
+            break
+
+        # Simulate processing delay
+        await asyncio.sleep(base_delay)
+
+        # Simulate records found in this batch
+        batch_records = random.randint(5, 15)
+        records_found += batch_records
+
+        # Update cost monitoring
+        cost_governor.record_page_scraped()
+        cost_governor.record_records_collected(batch_records)
+        cost_governor.record_browser_usage(1)
+
+        if records_found >= expected_records:
+            break
+
+    # Simulate some potential errors (rare)
+    if random.random() < 0.05:  # 5% chance
+        raise RuntimeError("Simulated scraper execution error")
+
+    return {
+        "records_found": records_found,
+        "execution_time": execution_time,
+        "simulated": True
+    }
+
+
+async def finalize_scraper_execution(control: ScrapeControlContract, cost_governor: CostGovernor, result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Finalize scraper execution with comprehensive governance reporting.
+
+    Args:
+        control: Control contract
+        cost_governor: Cost governor with final metrics
+        result: Execution results
+
+    Returns:
+        Complete execution summary with governance metrics
+    """
+    # Get final governance status
+    cost_status = cost_governor.get_budget_status()
+
+    # Get authorization audit summary
+    audit_summary = AuthorizationGate.get_audit_summary()
+
+    # Compile comprehensive execution report
+    final_report = {
+        "execution_id": f"exec_{int(asyncio.get_event_loop().time())}",
+        "timestamp": datetime.utcnow().isoformat(),
+        "control_contract": {
+            "tempo": control.tempo.value,
+            "sources": control.intent.sources,
+            "budget_limit": control.budget.max_records
+        },
+        "execution_results": {
+            "success": result["success"],
+            "records_found": result["records_found"],
+            "execution_time_seconds": result["execution_time"],
+            "cost_incurred": result["cost_incurred"],
+            "errors": result["errors"]
+        },
+        "governance_status": {
+            "budget_compliance": cost_status.get("within_budget", True),
+            "budget_utilization": cost_status.get("budget_utilization", 0.0),
+            "authorization_valid": audit_summary.get("authorization_rate", 1) > 0,
+            "deployment_window_respected": True  # Would be validated earlier
+        },
+        "performance_metrics": {
+            "records_per_second": result["records_found"] / max(result["execution_time"], 1),
+            "cost_per_record": result["cost_incurred"] / max(result["records_found"], 1),
+            "budget_efficiency": result["records_found"] / control.budget.max_records
+        },
+        "recommendations": cost_governor.get_optimization_recommendations()
+    }
+
+    logger.info(
+        f"Scraper execution finalized: {result['records_found']} records, "
+        f"${result['cost_incurred']:.2f} cost, "
+        f"{'budget compliant' if cost_status['within_budget'] else 'budget exceeded'}"
+    )
+
+    return final_report
 
 
 async def start_scrape(control: ScrapeControlContract) -> Dict[str, Any]:
