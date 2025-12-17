@@ -59,6 +59,7 @@ class ScraperConfig:
     proxies: List[str] = field(default_factory=list)
     retry_config: Optional[RetryConfig] = None  # Custom retry configuration
     enable_retry: bool = True  # Enable retry logic
+    dry_run: bool = False  # Enable dry-run mode (no actual HTTP requests)
 
 
 class BaseScraper(ABC):
@@ -68,6 +69,26 @@ class BaseScraper(ABC):
     ROLE = None  # discovery / verification / enrichment / browser
     TIER = None  # 1, 2, 3 (complexity/compliance level)
     SUPPORTED_EVENTS = []  # List of supported event types (weddings/corporate/social/professional)
+
+    # Required methods that subclasses must implement
+    _REQUIRED_METHODS = ['_execute_scrape']
+
+    def __init_subclass__(cls, **kwargs):
+        """Validate that subclasses implement required methods."""
+        super().__init_subclass__(**kwargs)
+
+        # Skip validation for abstract classes
+        if ABC in cls.__bases__:
+            return
+
+        # Check required methods are implemented (not just inherited abstract)
+        for method_name in BaseScraper._REQUIRED_METHODS:
+            method = getattr(cls, method_name, None)
+            if method is None:
+                raise TypeError(f"Scraper {cls.__name__} must implement {method_name}()")
+            # Check it's not still abstract
+            if getattr(method, '__isabstractmethod__', False):
+                raise TypeError(f"Scraper {cls.__name__} must implement {method_name}()")
 
     def __init__(self, config: ScraperConfig, control: Optional[ScrapeControlContract] = None):
         self.config = config
@@ -113,6 +134,15 @@ class BaseScraper(ABC):
             # Pre-flight governance check
             if self.control:
                 self.enforce()
+
+            # Dry-run mode: validate without executing
+            if self.config.dry_run:
+                self.logger.info(f"[DRY-RUN] Would scrape target: {target}")
+                result.success = True
+                result.data = {'dry_run': True, 'target': target}
+                result.metadata['dry_run'] = True
+                result.response_time = time.time() - start_time
+                return result
 
             # Check rate limiting
             await self._check_rate_limit()
