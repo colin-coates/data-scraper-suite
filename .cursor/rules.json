@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "path": "core/base_scraper.py",
+      "readOnly": true,
+      "reason": "Canonical BaseScraper – do not modify"
+    },
+    {
+      "path": "core/",
+      "disallowAutoFix": true
+    }
+  ]
+}

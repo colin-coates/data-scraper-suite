@@ -1,0 +1,7 @@
+rules:
+  - path: core/base_scraper.py
+    read_only: true
+    reason: Canonical BaseScraper
+
+  - path: core/**
+    disallow_auto_fix: true
