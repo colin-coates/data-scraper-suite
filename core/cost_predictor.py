@@ -6,6 +6,13 @@
 """
 Cost Prediction Engine for MJ Data Scraper Suite
 
+DEPRECATION NOTICE: CostPrediction contract has been moved to mj-shared-lib.
+Import from mj_shared.contracts instead:
+
+    from mj_shared.contracts import CostPrediction
+
+This engine implementation is still valid, but contracts should come from mj-shared-lib.
+
 Advanced machine learning and analytical cost prediction system that forecasts
 scraping costs, optimizes execution strategies, and provides budget intelligence
 for enterprise-grade data operations.

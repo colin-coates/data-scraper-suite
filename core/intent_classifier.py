@@ -6,6 +6,13 @@
 """
 Intent Classification Engine for MJ Data Scraper Suite
 
+DEPRECATION NOTICE: IntentClassification contract has been moved to mj-shared-lib.
+Import from mj_shared.contracts instead:
+
+    from mj_shared.contracts import IntentClassification, IntentRiskLevel, IntentCategory
+
+This engine implementation is still valid, but contracts should come from mj-shared-lib.
+
 Advanced machine learning and rule-based intent classification system that
 analyzes scraping requests to determine appropriate governance, risk levels,
 and operational parameters for optimal execution.

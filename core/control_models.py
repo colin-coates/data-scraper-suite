@@ -6,11 +6,25 @@
 """
 Control Models for MJ Data Scraper Suite
 
-Provides centralized data models for scraper control, job management,
-and system configuration with validation and serialization.
+DEPRECATION NOTICE: Core scraping contracts have been moved to mj-shared-lib.
+Import from mj_shared.contracts instead:
+
+    from mj_shared.contracts import (
+        ScrapeTempo,
+        ScrapeBudget,
+        ScrapeIntent,
+        ScrapeAuthorization,
+        ScrapeControlContract,
+        IntentClassification,
+        CostPrediction,
+    )
+
+This file is maintained for backward compatibility only.
+New code should use mj-shared-lib contracts directly.
 """
 
 import uuid
+import warnings
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Union, Set
 from dataclasses import dataclass, field, asdict
@@ -18,6 +32,31 @@ from enum import Enum
 
 # Pydantic replacement using dataclasses for validation
 from .retry_utils import RetryConfig
+
+# Re-export shared contracts for backward compatibility
+try:
+    from mj_shared.contracts import (
+        ScrapeTempo as SharedScrapeTempo,
+        ScrapeBudget as SharedScrapeBudget,
+        ScrapeIntent as SharedScrapeIntent,
+        ScrapeAuthorization as SharedScrapeAuthorization,
+        ScrapeControlContract as SharedScrapeControlContract,
+        IntentClassification as SharedIntentClassification,
+        CostPrediction as SharedCostPrediction,
+        JobPriority,
+        JobStatus,
+        IntentRiskLevel,
+        IntentCategory,
+        GovernanceRequirement,
+    )
+    _SHARED_LIB_AVAILABLE = True
+except ImportError:
+    _SHARED_LIB_AVAILABLE = False
+    warnings.warn(
+        "mj-shared-lib not installed. Using local definitions. "
+        "Install mj-shared-lib to prevent drift.",
+        DeprecationWarning
+    )
 
 
 # Dataclass-based Models for Advanced Control Contracts
