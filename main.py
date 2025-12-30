@@ -25,6 +25,9 @@ import uvicorn
 from core.websocket_handler import websocket_endpoint, connection_manager, event_emitter
 from orchestration.job_scheduler import JobScheduler, JobSchedule, ScheduleType, JobPriority
 from core.service_bus import service_bus, QueueName, PipelineMessage, MessageType
+from core.data_quality import quality_scorer, QualityReport
+from core.security import rate_limiter, audit_logger, api_key_manager, security_middleware
+from ml.adaptive_scraper import adaptive_scraper
 
 # Configure logging
 logging.basicConfig(
@@ -414,6 +417,95 @@ async def publish_to_servicebus(
         raise HTTPException(status_code=500, detail="Failed to publish message")
     
     return {"status": "published", "queue": queue, "job_id": job_id}
+
+
+# Data Quality endpoints
+@app.post("/quality/score")
+async def score_data_quality(data: dict):
+    """Score the quality of scraped data."""
+    report = quality_scorer.score(data)
+    return report.to_dict()
+
+
+@app.post("/quality/batch")
+async def score_batch_quality(records: list):
+    """Score quality of a batch of records."""
+    return quality_scorer.score_batch(records)
+
+
+# ML Adaptive Scraper endpoints
+@app.get("/ml/recommendation/{domain}")
+async def get_scraping_recommendation(domain: str):
+    """Get ML-based scraping recommendation for a domain."""
+    return adaptive_scraper.get_recommendation(domain)
+
+
+@app.get("/ml/insights/{domain}")
+async def get_domain_insights(domain: str):
+    """Get detailed ML insights for a domain."""
+    return adaptive_scraper.get_domain_insights(domain)
+
+
+@app.get("/ml/insights")
+async def get_global_insights():
+    """Get global ML insights across all domains."""
+    return adaptive_scraper.get_global_insights()
+
+
+@app.post("/ml/record")
+async def record_scrape_attempt(
+    domain: str,
+    scraper_type: str,
+    strategy: str,
+    success: bool,
+    response_time_ms: int,
+    status_code: Optional[int] = None,
+    records_found: int = 0,
+    error_type: Optional[str] = None
+):
+    """Record a scrape attempt for ML learning."""
+    adaptive_scraper.record_attempt(
+        domain=domain,
+        scraper_type=scraper_type,
+        strategy=strategy,
+        success=success,
+        response_time_ms=response_time_ms,
+        status_code=status_code,
+        records_found=records_found,
+        error_type=error_type
+    )
+    return {"status": "recorded"}
+
+
+# Security endpoints
+@app.get("/security/audit")
+async def get_audit_logs(
+    event_type: Optional[str] = None,
+    limit: int = 100
+):
+    """Get audit logs."""
+    logs = await audit_logger.search(event_type=event_type, limit=limit)
+    return {
+        "logs": [
+            {
+                "timestamp": log.timestamp.isoformat(),
+                "event_type": log.event_type,
+                "actor": log.actor,
+                "resource": log.resource,
+                "action": log.action,
+                "success": log.success,
+                "error": log.error
+            }
+            for log in logs
+        ],
+        "total": len(logs)
+    }
+
+
+@app.get("/security/audit/stats")
+async def get_audit_stats():
+    """Get audit log statistics."""
+    return audit_logger.get_stats()
 
 
 @app.on_event("startup")
