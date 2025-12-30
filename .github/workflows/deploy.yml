@@ -74,3 +74,18 @@ jobs:
           resourceGroup: ${{ env.RESOURCE_GROUP }}
           containerAppName: ${{ env.CONTAINER_APP_NAME }}
           imageToDeploy: ${{ env.AZURE_CONTAINER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          environmentVariables: |
+            AZURE_SERVICEBUS_CONNECTION_STRING=secretref:servicebus-connection-string
+
+      - name: Update Container App secrets
+        run: |
+          az containerapp secret set \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --secrets servicebus-connection-string="${{ secrets.AZURE_SERVICEBUS_CONNECTION_STRING }}" \
+            || echo "Secret may already exist"
+          
+          az containerapp update \
+            --name ${{ env.CONTAINER_APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --set-env-vars "AZURE_SERVICEBUS_CONNECTION_STRING=secretref:servicebus-connection-string"

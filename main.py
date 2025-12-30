@@ -24,6 +24,7 @@ import uvicorn
 
 from core.websocket_handler import websocket_endpoint, connection_manager, event_emitter
 from orchestration.job_scheduler import JobScheduler, JobSchedule, ScheduleType, JobPriority
+from core.service_bus import service_bus, QueueName, PipelineMessage, MessageType
 
 # Configure logging
 logging.basicConfig(
@@ -128,11 +129,17 @@ async def execute_scrape_job(job_id: str, request: ScrapeRequest):
     """Execute a scraping job in the background."""
     global scraper_status
     
+    result = None
+    error_msg = None
+    
     try:
         scraper_status["status"] = "running"
         scraper_status["current_job"] = job_id
         
         logger.info(f"Starting scrape job {job_id} for {request.url}")
+        
+        # Emit WebSocket event
+        event_emitter.emit_job_started(job_id, request.scraper_type, request.url)
         
         # Import and run the scraper engine
         from core.scraper_engine import ScraperEngine
@@ -147,9 +154,35 @@ async def execute_scrape_job(job_id: str, request: ScrapeRequest):
         scraper_status["jobs_completed"] += 1
         logger.info(f"Completed scrape job {job_id}")
         
+        # Publish result to Service Bus for enrichment
+        await service_bus.publish_scrape_result(
+            job_id=job_id,
+            scraper_type=request.scraper_type,
+            url=request.url,
+            data=result,
+            success=True
+        )
+        
+        # Emit WebSocket completion event
+        event_emitter.emit_job_completed(job_id, len(result) if result else 0, 0, success=True)
+        
     except Exception as e:
+        error_msg = str(e)
         scraper_status["jobs_failed"] += 1
         logger.error(f"Failed scrape job {job_id}: {e}")
+        
+        # Publish failure to Service Bus
+        await service_bus.publish_scrape_result(
+            job_id=job_id,
+            scraper_type=request.scraper_type,
+            url=request.url,
+            data={},
+            success=False,
+            error=error_msg
+        )
+        
+        # Emit WebSocket failure event
+        event_emitter.emit_job_completed(job_id, 0, 0, success=False)
         
     finally:
         scraper_status["status"] = "idle"
@@ -344,12 +377,58 @@ async def get_websocket_connections():
     return connection_manager.get_metrics()
 
 
+@app.get("/servicebus/metrics")
+async def get_servicebus_metrics():
+    """Get Service Bus metrics."""
+    return service_bus.get_metrics()
+
+
+@app.post("/servicebus/publish")
+async def publish_to_servicebus(
+    queue: str,
+    message_type: str,
+    job_id: str,
+    data: dict
+):
+    """Manually publish a message to Service Bus."""
+    queue_map = {
+        "scraper-work": QueueName.SCRAPER_WORK,
+        "enrichment-tasks": QueueName.ENRICHMENT_TASKS,
+        "enrichment-events": QueueName.ENRICHMENT_EVENTS,
+        "ingestion-events": QueueName.INGESTION_EVENTS,
+    }
+    
+    if queue not in queue_map:
+        raise HTTPException(status_code=400, detail=f"Invalid queue: {queue}")
+    
+    message = PipelineMessage(
+        message_type=message_type,
+        job_id=job_id,
+        data=data,
+        source="api"
+    )
+    
+    success = await service_bus.send_message(queue_map[queue], message)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to publish message")
+    
+    return {"status": "published", "queue": queue, "job_id": job_id}
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
     # Create data directory
     os.makedirs("./data", exist_ok=True)
     os.makedirs("./screenshots", exist_ok=True)
+    
+    # Connect to Service Bus
+    try:
+        await service_bus.connect()
+        logger.info("Connected to Azure Service Bus")
+    except Exception as e:
+        logger.warning(f"Service Bus connection failed (will retry on use): {e}")
     
     # Load persisted jobs
     job_scheduler.load_jobs()
@@ -368,6 +447,7 @@ async def shutdown_event():
     """Cleanup on shutdown."""
     await job_scheduler.stop()
     await event_emitter.stop()
+    await service_bus.close()
     logger.info("Scraper services stopped")
 
 
