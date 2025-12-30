@@ -68,24 +68,18 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy to Azure Container Apps
-        uses: azure/container-apps-deploy-action@v1
-        with:
-          resourceGroup: ${{ env.RESOURCE_GROUP }}
-          containerAppName: ${{ env.CONTAINER_APP_NAME }}
-          imageToDeploy: ${{ env.AZURE_CONTAINER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          environmentVariables: |
-            AZURE_SERVICEBUS_CONNECTION_STRING=secretref:servicebus-connection-string
-
-      - name: Update Container App secrets
+      - name: Set Container App secrets and env vars
         run: |
+          # Set secret first
           az containerapp secret set \
             --name ${{ env.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --secrets servicebus-connection-string="${{ secrets.AZURE_SERVICEBUS_CONNECTION_STRING }}" \
-            || echo "Secret may already exist"
+            2>/dev/null || echo "Secret already exists or updated"
           
+          # Update container app with new image and env var
           az containerapp update \
             --name ${{ env.CONTAINER_APP_NAME }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.AZURE_CONTAINER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
             --set-env-vars "AZURE_SERVICEBUS_CONNECTION_STRING=secretref:servicebus-connection-string"
