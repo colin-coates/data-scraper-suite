@@ -29,6 +29,9 @@ azure-identity>=1.15.0
 fake-useragent>=1.4.0
 cloudscraper>=1.2.71
 
+# WebSocket Support
+websockets>=12.0
+
 # Logging & Monitoring
 python-json-logger>=2.0.0
 structlog>=23.2.0
